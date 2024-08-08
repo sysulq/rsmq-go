@@ -308,7 +308,7 @@ func (mq *MessageQueue) processDelayedMessages(ctx context.Context) (int, error)
 	return len(messages), nil
 }
 
-func (mq *MessageQueue) consumeStream(ctx context.Context, handler MessageHandler) (int, error) {
+func (mq *MessageQueue) consumeStream(ctx context.Context, handler MessageHandler) (uint32, error) {
 	streams, err := mq.opts.Client.XReadGroup(ctx, &redis.XReadGroupArgs{
 		Group:    mq.opts.ConsumeOpts.ConsumerGroup,
 		Consumer: mq.opts.ConsumeOpts.ConsumerID,
@@ -331,7 +331,7 @@ func (mq *MessageQueue) consumeStream(ctx context.Context, handler MessageHandle
 	}
 
 	var wg sync.WaitGroup
-	processed := 0
+	var processed uint32
 	errors := make(chan error, mq.opts.ConsumeOpts.BatchSize)
 	semaphore := make(chan struct{}, mq.opts.ConsumeOpts.MaxConcurrency)
 
@@ -362,7 +362,7 @@ func (mq *MessageQueue) consumeStream(ctx context.Context, handler MessageHandle
 						errors <- fmt.Errorf("failed to acknowledge message %s: %w", msg.ID, err)
 						return
 					}
-					processed++
+					atomic.AddUint32(&processed, 1)
 				} else {
 					// Message processing failed, implement retry logic
 					if atomic.AddUint32(&m.RetryCount, 1) <= mq.opts.ConsumeOpts.MaxRetryLimit {
