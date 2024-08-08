@@ -60,7 +60,7 @@ func TestOtel(t *testing.T) {
 			fmt.Println(task.String(), task.GetMetadata())
 			fmt.Println(trace.SpanContextFromContext(ctx).TraceID().String())
 
-			close(consumeDone)
+			consumeDone <- struct{}{}
 
 			return &rsmq.Result{
 				Id: task.Id,

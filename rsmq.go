@@ -78,6 +78,9 @@ func New(opts Options) *MessageQueue {
 	if opts.ConsumeOpts.RetryTimeWait == 0 {
 		opts.ConsumeOpts.RetryTimeWait = 5 * time.Second
 	}
+	if opts.ConsumeOpts.PendingTimeout == 0 {
+		opts.ConsumeOpts.PendingTimeout = time.Minute
+	}
 
 	processScript := redis.NewScript(`
         local delayedSetKey = KEYS[1]
@@ -229,6 +232,7 @@ type ConsumeOpts struct {
 	ConsumerIdleTimeout time.Duration
 	MaxRetryLimit       uint32
 	RetryTimeWait       time.Duration
+	PendingTimeout      time.Duration
 }
 
 // Consume starts consuming messages from the queue
@@ -325,6 +329,28 @@ func (mq *MessageQueue) processDelayedMessages(ctx context.Context) (int, error)
 }
 
 func (mq *MessageQueue) consumeStream(ctx context.Context, handler MessageHandler) (uint32, error) {
+	var processed uint32
+
+	// 首先处理正常的消息流
+	normalProcessed, err := mq.processNormalMessages(ctx, handler)
+	if err != nil {
+		return processed, err
+	}
+	processed += normalProcessed
+
+	// 如果没有新的正常消息，尝试处理pending消息
+	if normalProcessed == 0 {
+		pendingProcessed, err := mq.processPendingMessages(ctx, handler)
+		if err != nil {
+			slog.Error("failed to process pending messages", "error", err)
+		}
+		processed += pendingProcessed
+	}
+
+	return processed, nil
+}
+
+func (mq *MessageQueue) processNormalMessages(ctx context.Context, handler MessageHandler) (uint32, error) {
 	streams, err := mq.opts.Client.XReadGroup(ctx, &redis.XReadGroupArgs{
 		Group:    mq.opts.ConsumeOpts.ConsumerGroup,
 		Consumer: mq.opts.ConsumeOpts.ConsumerID,
@@ -341,7 +367,7 @@ func (mq *MessageQueue) consumeStream(ctx context.Context, handler MessageHandle
 				return 0, err
 			}
 
-			return mq.consumeStream(ctx, handler)
+			return mq.processNormalMessages(ctx, handler)
 		}
 		return 0, fmt.Errorf("failed to read from stream: %w", err)
 	}
@@ -352,7 +378,7 @@ func (mq *MessageQueue) consumeStream(ctx context.Context, handler MessageHandle
 	semaphore := make(chan struct{}, mq.opts.ConsumeOpts.MaxConcurrency)
 
 	for _, stream := range streams {
-		slog.Debug("read messages", "stream", stream.Stream, "count", len(stream.Messages))
+		slog.Debug("read messages", "stream", stream.Stream, "count", len(stream.Messages), "consumer", mq.opts.ConsumeOpts.ConsumerID)
 
 		for _, message := range stream.Messages {
 
@@ -362,7 +388,7 @@ func (mq *MessageQueue) consumeStream(ctx context.Context, handler MessageHandle
 			go func(msg redis.XMessage) {
 				defer wg.Done()
 				defer func() { <-semaphore }() // 释放信号量
-				slog.Debug("processing message", "id", msg.ID)
+				slog.Debug("processing message", "id", msg.ID, "values", msg.Values)
 
 				m, err := mq.unmarshalMessage(msg)
 				if err != nil {
@@ -516,4 +542,56 @@ func (mq *MessageQueue) unmarshalMessage(msg redis.XMessage) (*Message, error) {
 	}
 	m.Id = msg.ID
 	return &m, nil
+}
+
+func (mq *MessageQueue) processPendingMessages(ctx context.Context, handler MessageHandler) (uint32, error) {
+	pending, err := mq.opts.Client.XPendingExt(ctx, &redis.XPendingExtArgs{
+		Stream: mq.streamString(),
+		Group:  mq.opts.ConsumeOpts.ConsumerGroup,
+		Start:  "-",
+		End:    "+",
+		Idle:   mq.opts.ConsumeOpts.PendingTimeout,
+		Count:  mq.opts.ConsumeOpts.BatchSize,
+	}).Result()
+	if err != nil {
+		return 0, fmt.Errorf("failed to get pending messages: %w", err)
+	}
+
+	var processed uint32
+	for _, p := range pending {
+
+		claimed, err := mq.opts.Client.XClaim(ctx, &redis.XClaimArgs{
+			Stream:   mq.streamString(),
+			Group:    mq.opts.ConsumeOpts.ConsumerGroup,
+			Consumer: mq.opts.ConsumeOpts.ConsumerID,
+			MinIdle:  mq.opts.ConsumeOpts.PendingTimeout,
+			Messages: []string{p.ID},
+		}).Result()
+		if err != nil {
+			slog.Error("failed to claim pending message", "message_id", p.ID, "error", err)
+			continue
+		}
+
+		for _, msg := range claimed {
+			m, err := mq.unmarshalMessage(msg)
+			if err != nil {
+				slog.Error("failed to unmarshal claimed message", "message_id", msg.ID, "error", err)
+				continue
+			}
+
+			result := handler(ctx, m)
+			if result.Error == "" {
+				if err := mq.opts.Client.XAck(ctx, mq.streamString(), mq.opts.ConsumeOpts.ConsumerGroup, msg.ID).Err(); err != nil {
+					slog.Error("failed to acknowledge claimed message", "message_id", msg.ID, "error", err)
+				} else {
+					atomic.AddUint32(&processed, 1)
+				}
+			} else {
+				slog.Error("failed to process claimed message", "message_id", msg.ID, "error", result.Error)
+				// 可以在这里实现重试逻辑
+			}
+		}
+	}
+
+	return processed, nil
 }
