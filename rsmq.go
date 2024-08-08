@@ -29,8 +29,8 @@ type Message = rsmqv1.Message
 // MessageHandler is a function that processes a message and returns a result
 type MessageHandler func(context.Context, *Message) error
 
-// RsMQ manages message production and consumption
-type RsMQ struct {
+// MessageQueue manages message production and consumption
+type MessageQueue struct {
 	opts          Options
 	closed        *atomic.Uint32
 	processScript *redis.Script
@@ -40,15 +40,50 @@ type RsMQ struct {
 }
 
 type Options struct {
-	Client      *redis.Client
-	Stream      string
-	MaxLen      int64
-	Tracer      trace.Tracer
+	// Client is the Redis client
+	Client *redis.Client
+	// Stream is the key of the stream
+	Stream string
+	// MaxLen is the maximum length of the stream
+	MaxLen int64
+	// Trace is the OpenTelemetry tracer
+	Tracer trace.Tracer
+	// ConsumeOpts represents options for consuming messages
 	ConsumeOpts ConsumeOpts
 }
 
+// ConsumeOpts represents options for consuming messages
+type ConsumeOpts struct {
+	// ConsumerGroup is the name of the consumer group
+	ConsumerGroup string
+	// ConsumerID is the unique identifier for the consumer
+	ConsumerID string
+	// BatchSize is the number of messages to consume in a single batch
+	BatchSize int64
+	// MaxPollInterval is the maximum time to wait between polls
+	MaxPollInterval time.Duration
+	// MinPollInterval is the minimum time to wait between polls
+	MinPollInterval time.Duration
+	// BlockDuration is the maximum time to block while waiting for messages
+	BlockDuration time.Duration
+	// AutoCreateGroup determines whether the consumer group should be created automatically
+	AutoCreateGroup bool
+	// MaxConcurrency is the maximum number of messages to process concurrently
+	MaxConcurrency uint32
+	// ConsumerIdleTimeout is the maximum time a consumer can be idle before being removed
+	ConsumerIdleTimeout time.Duration
+	// MaxRetryLimit is the maximum number of times a message can be retried
+	MaxRetryLimit uint32
+	// RetryTimeWait is the time to wait before retrying a message
+	RetryTimeWait time.Duration
+	// PendingTimeout is the time to wait before a pending message is re-queued
+	PendingTimeout time.Duration
+	// IdleConsumerCleanInterval is the interval to clean idle consumers
+	IdleConsumerCleanInterval time.Duration
+}
+
 // New creates a new MessageQueue instance
-func New(opts Options) *RsMQ {
+func New(opts Options) *MessageQueue {
 	if opts.Client == nil {
 		panic("redis client is required")
 	}
@@ -122,7 +157,7 @@ func New(opts Options) *RsMQ {
         return messages
     `)
 
-	mq := &RsMQ{
+	mq := &MessageQueue{
 		opts:          opts,
 		processScript: processScript,
 		closed:        &atomic.Uint32{},
@@ -133,7 +168,7 @@ func New(opts Options) *RsMQ {
 	return mq
 }
 
-func (mq *RsMQ) enqueueMessage(ctx context.Context, pipe redis.Cmdable, msg *Message) error {
+func (mq *MessageQueue) enqueueMessage(ctx context.Context, pipe redis.Cmdable, msg *Message) error {
 	messageBytes, err := proto.Marshal(msg)
 	if err != nil {
 		return fmt.Errorf("failed to marshal message: %w", err)
@@ -169,7 +204,7 @@ func (mq *RsMQ) enqueueMessage(ctx context.Context, pipe redis.Cmdable, msg *Mes
 }
 
 // Enqueue adds a new message to the queue
-func (mq *RsMQ) Enqueue(ctx context.Context, message *Message) error {
+func (mq *MessageQueue) Enqueue(ctx context.Context, message *Message) error {
 	if message.GetId() == "" {
 		message.Id = uuid.New().String()
 	}
@@ -196,15 +231,15 @@ func (mq *RsMQ) Enqueue(ctx context.Context, message *Message) error {
 	return mq.enqueueMessage(ctx, mq.opts.Client, message)
 }
 
-func (mq *RsMQ) streamDelayKeyString() string {
+func (mq *MessageQueue) streamDelayKeyString() string {
 	return fmt.Sprintf("%s:delayed", mq.streamString())
 }
 
-func (mq *RsMQ) streamString() string {
+func (mq *MessageQueue) streamString() string {
 	return fmt.Sprintf("rsmq:{%s}", mq.opts.Stream)
 }
 
-func (mq *RsMQ) ensureConsumerGroup(ctx context.Context, group string) error {
+func (mq *MessageQueue) ensureConsumerGroup(ctx context.Context, group string) error {
 	// First, ensure the stream exists
 	err := mq.opts.Client.XGroupCreateMkStream(ctx, mq.streamString(), group, "$").Err()
 	if err != nil {
@@ -220,25 +255,8 @@ func (mq *RsMQ) ensureConsumerGroup(ctx context.Context, group string) error {
 	return nil
 }
 
-// ConsumeOpts represents options for consuming messages
-type ConsumeOpts struct {
-	ConsumerGroup             string
-	ConsumerID                string
-	BatchSize                 int64
-	MaxPollInterval           time.Duration
-	MinPollInterval           time.Duration
-	BlockDuration             time.Duration
-	AutoCreateGroup           bool
-	MaxConcurrency            uint32
-	ConsumerIdleTimeout       time.Duration
-	MaxRetryLimit             uint32
-	RetryTimeWait             time.Duration
-	PendingTimeout            time.Duration
-	IdleConsumerCleanInterval time.Duration
-}
-
 // Consume starts consuming messages from the queue
-func (mq *RsMQ) Consume(ctx context.Context, handler MessageHandler) error {
+func (mq *MessageQueue) Consume(ctx context.Context, handler MessageHandler) error {
 	opts := mq.opts.ConsumeOpts
 
 	if opts.ConsumerGroup == "" {
@@ -318,7 +336,7 @@ func (mq *RsMQ) Consume(ctx context.Context, handler MessageHandler) error {
 	}
 }
 
-func (mq *RsMQ) Close() error {
+func (mq *MessageQueue) Close() error {
 	if !mq.closed.CompareAndSwap(0, 1) {
 		return nil
 	}
@@ -334,7 +352,7 @@ func (mq *RsMQ) Close() error {
 	return nil
 }
 
-func (mq *RsMQ) processDelayedMessages(ctx context.Context) (int, error) {
+func (mq *MessageQueue) processDelayedMessages(ctx context.Context) (int, error) {
 	now := time.Now().Unix()
 
 	result, err := mq.processScript.Run(ctx, mq.opts.Client, []string{mq.streamDelayKeyString(), mq.streamString()}, now).Result()
@@ -350,7 +368,7 @@ func (mq *RsMQ) processDelayedMessages(ctx context.Context) (int, error) {
 	return len(messages), nil
 }
 
-func (mq *RsMQ) consumeStream(ctx context.Context, handler MessageHandler) (uint32, error) {
+func (mq *MessageQueue) consumeStream(ctx context.Context, handler MessageHandler) (uint32, error) {
 	var processed uint32
 
 	// 首先处理正常的消息流
@@ -372,7 +390,7 @@ func (mq *RsMQ) consumeStream(ctx context.Context, handler MessageHandler) (uint
 	return processed, nil
 }
 
-func (mq *RsMQ) processNormalMessages(ctx context.Context, handler MessageHandler) (uint32, error) {
+func (mq *MessageQueue) processNormalMessages(ctx context.Context, handler MessageHandler) (uint32, error) {
 	streams, err := mq.opts.Client.XReadGroup(ctx, &redis.XReadGroupArgs{
 		Group:    mq.opts.ConsumeOpts.ConsumerGroup,
 		Consumer: mq.opts.ConsumeOpts.ConsumerID,
@@ -478,7 +496,7 @@ func (mq *RsMQ) processNormalMessages(ctx context.Context, handler MessageHandle
 	return processed, nil
 }
 
-func (mq *RsMQ) getNextDelayedMessageTime(ctx context.Context) (time.Time, error) {
+func (mq *MessageQueue) getNextDelayedMessageTime(ctx context.Context) (time.Time, error) {
 	result, err := mq.opts.Client.ZRangeWithScores(ctx, mq.streamDelayKeyString(), 0, 0).Result()
 	if err != nil {
 		return time.Time{}, fmt.Errorf("failed to get next delayed message time: %w", err)
@@ -506,7 +524,7 @@ func generateConsumerID() string {
 	return fmt.Sprintf("%s-%s", hostname, uuid.New().String())
 }
 
-func (mq *RsMQ) cleanIdleConsumers(ctx context.Context) (int, error) {
+func (mq *MessageQueue) cleanIdleConsumers(ctx context.Context) (int, error) {
 	lock, err := mq.redisLock.Obtain(ctx, "rsmq:lock:"+mq.opts.Stream, 3*time.Second, &redislock.Options{})
 	if err != nil && err != redislock.ErrNotObtained {
 		slog.Error("failed to obtain lock", "error", err)
@@ -532,7 +550,7 @@ func (mq *RsMQ) cleanIdleConsumers(ctx context.Context) (int, error) {
 	return 0, nil
 }
 
-func (q *RsMQ) retry(ctx context.Context, msg *Message) error {
+func (q *MessageQueue) retry(ctx context.Context, msg *Message) error {
 	// Make the delete and re-queue operation atomic in case we crash midway
 	// and lose a message.
 	pipe := q.opts.Client.TxPipeline()
@@ -556,7 +574,7 @@ func (q *RsMQ) retry(ctx context.Context, msg *Message) error {
 	return err
 }
 
-func (mq *RsMQ) unmarshalMessage(msg redis.XMessage) (*Message, error) {
+func (mq *MessageQueue) unmarshalMessage(msg redis.XMessage) (*Message, error) {
 	messageJSON := msg.Values["message"].(string)
 	var m Message
 	if err := proto.Unmarshal([]byte(messageJSON), &m); err != nil {
@@ -566,7 +584,7 @@ func (mq *RsMQ) unmarshalMessage(msg redis.XMessage) (*Message, error) {
 	return &m, nil
 }
 
-func (mq *RsMQ) processPendingMessages(ctx context.Context, handler MessageHandler) (uint32, error) {
+func (mq *MessageQueue) processPendingMessages(ctx context.Context, handler MessageHandler) (uint32, error) {
 	claimed, _, err := mq.opts.Client.XAutoClaim(ctx, &redis.XAutoClaimArgs{
 		Stream:   mq.streamString(),
 		Group:    mq.opts.ConsumeOpts.ConsumerGroup,
