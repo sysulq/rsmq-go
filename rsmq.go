@@ -32,7 +32,7 @@ type MessageQueue struct {
 
 type Options struct {
 	Client      *redis.Client
-	StreamKey   string
+	Stream      string
 	ConsumeOpts ConsumeOpts
 }
 
@@ -42,7 +42,7 @@ func New(opts Options) *MessageQueue {
 		panic("redis client is required")
 	}
 
-	if opts.StreamKey == "" {
+	if opts.Stream == "" {
 		panic("stream key is required")
 	}
 
@@ -117,8 +117,8 @@ func New(opts Options) *MessageQueue {
 		}
 	}
 
-	mq.cron.AddFunc("@every 5min", func() {
-		mq.cleanIdleConsumers(context.Background())
+	_, _ = mq.cron.AddFunc("@every 5min", func() {
+		_, _ = mq.cleanIdleConsumers(context.Background())
 	})
 
 	mq.cron.Start()
@@ -146,7 +146,7 @@ func (mq *MessageQueue) enqueueMessage(ctx context.Context, pipe redis.Cmdable, 
 	} else {
 		// Add to stream
 		err = pipe.XAdd(ctx, &redis.XAddArgs{
-			Stream: mq.streamKeyString(),
+			Stream: mq.streamString(),
 			Values: map[string]interface{}{"message": string(messageBytes)},
 		}).Err()
 		if err != nil {
@@ -171,22 +171,22 @@ func (mq *MessageQueue) Enqueue(ctx context.Context, message *Message) error {
 		message.DeliverTimestamp = message.GetBornTimestamp()
 	}
 
-	message.StreamKey = mq.streamKeyString()
+	message.StreamKey = mq.streamString()
 
 	return mq.enqueueMessage(ctx, mq.opts.Client, message)
 }
 
 func (mq *MessageQueue) streamDelayKeyString() string {
-	return fmt.Sprintf("%s:delayed", mq.streamKeyString())
+	return fmt.Sprintf("%s:delayed", mq.streamString())
 }
 
-func (mq *MessageQueue) streamKeyString() string {
-	return fmt.Sprintf("rsmq:{%s}", mq.opts.StreamKey)
+func (mq *MessageQueue) streamString() string {
+	return fmt.Sprintf("rsmq:{%s}", mq.opts.Stream)
 }
 
 func (mq *MessageQueue) ensureConsumerGroup(ctx context.Context, group string) error {
 	// First, ensure the stream exists
-	err := mq.opts.Client.XGroupCreateMkStream(ctx, mq.streamKeyString(), group, "$").Err()
+	err := mq.opts.Client.XGroupCreateMkStream(ctx, mq.streamString(), group, "$").Err()
 	if err != nil {
 		// If the error is not because the group already exists, return the error
 		if err.Error() != "BUSYGROUP Consumer Group name already exists" {
@@ -284,7 +284,7 @@ func (mq *MessageQueue) Close() error {
 	mq.cron.Stop()
 
 	err := mq.opts.Client.XGroupDelConsumer(
-		context.Background(), mq.streamKeyString(), mq.opts.ConsumeOpts.ConsumerGroup, mq.opts.ConsumeOpts.ConsumerID).Err()
+		context.Background(), mq.streamString(), mq.opts.ConsumeOpts.ConsumerGroup, mq.opts.ConsumeOpts.ConsumerID).Err()
 	if err != nil {
 		slog.Error("failed to remove consumer from group", "error", err)
 	}
@@ -295,7 +295,7 @@ func (mq *MessageQueue) Close() error {
 func (mq *MessageQueue) processDelayedMessages(ctx context.Context) (int, error) {
 	now := time.Now().Unix()
 
-	result, err := mq.processScript.Run(ctx, mq.opts.Client, []string{mq.streamDelayKeyString(), mq.streamKeyString()}, now).Result()
+	result, err := mq.processScript.Run(ctx, mq.opts.Client, []string{mq.streamDelayKeyString(), mq.streamString()}, now).Result()
 	if err != nil {
 		return 0, fmt.Errorf("failed to process delayed messages: %w", err)
 	}
@@ -312,7 +312,7 @@ func (mq *MessageQueue) consumeStream(ctx context.Context, handler MessageHandle
 	streams, err := mq.opts.Client.XReadGroup(ctx, &redis.XReadGroupArgs{
 		Group:    mq.opts.ConsumeOpts.ConsumerGroup,
 		Consumer: mq.opts.ConsumeOpts.ConsumerID,
-		Streams:  []string{mq.streamKeyString(), ">"},
+		Streams:  []string{mq.streamString(), ">"},
 		Count:    mq.opts.ConsumeOpts.BatchSize,
 		Block:    time.Second,
 	}).Result()
@@ -321,7 +321,10 @@ func (mq *MessageQueue) consumeStream(ctx context.Context, handler MessageHandle
 			return 0, nil // 没有消息
 		}
 		if strings.HasPrefix(err.Error(), "NOGROUP") {
-			mq.ensureConsumerGroup(ctx, mq.opts.ConsumeOpts.ConsumerGroup)
+			if err := mq.ensureConsumerGroup(ctx, mq.opts.ConsumeOpts.ConsumerGroup); err != nil {
+				return 0, err
+			}
+
 			return mq.consumeStream(ctx, handler)
 		}
 		return 0, fmt.Errorf("failed to read from stream: %w", err)
@@ -355,7 +358,7 @@ func (mq *MessageQueue) consumeStream(ctx context.Context, handler MessageHandle
 
 				if result.Error == "" {
 					// Message processed successfully
-					if err := mq.opts.Client.XAck(ctx, mq.streamKeyString(), mq.opts.ConsumeOpts.ConsumerGroup, msg.ID).Err(); err != nil {
+					if err := mq.opts.Client.XAck(ctx, mq.streamString(), mq.opts.ConsumeOpts.ConsumerGroup, msg.ID).Err(); err != nil {
 						errors <- fmt.Errorf("failed to acknowledge message %s: %w", msg.ID, err)
 						return
 					}
@@ -375,7 +378,7 @@ func (mq *MessageQueue) consumeStream(ctx context.Context, handler MessageHandle
 						// Here you might want to implement dead letter queue logic
 					}
 					// Acknowledge the message to remove it from the pending list
-					if err := mq.opts.Client.XAck(ctx, mq.streamKeyString(), mq.opts.ConsumeOpts.ConsumerGroup, msg.ID).Err(); err != nil {
+					if err := mq.opts.Client.XAck(ctx, mq.streamString(), mq.opts.ConsumeOpts.ConsumerGroup, msg.ID).Err(); err != nil {
 						errors <- fmt.Errorf("failed to acknowledge failed message %s: %w", msg.ID, err)
 						return
 					}
@@ -429,14 +432,14 @@ func generateConsumerID() string {
 }
 
 func (mq *MessageQueue) cleanIdleConsumers(ctx context.Context) (int, error) {
-	lock, err := mq.redisLock.Obtain(ctx, "rsmq:lock:"+mq.opts.StreamKey, 3*time.Second, &redislock.Options{})
+	lock, err := mq.redisLock.Obtain(ctx, "rsmq:lock:"+mq.opts.Stream, 3*time.Second, &redislock.Options{})
 	if err != nil && err != redislock.ErrNotObtained {
 		slog.Error("failed to obtain lock", "error", err)
 		return 0, err
 	}
-	defer lock.Release(ctx)
+	defer func() { _ = lock.Release(ctx) }()
 
-	consumers, err := mq.opts.Client.XInfoConsumers(ctx, mq.streamKeyString(), mq.opts.ConsumeOpts.ConsumerGroup).Result()
+	consumers, err := mq.opts.Client.XInfoConsumers(ctx, mq.streamString(), mq.opts.ConsumeOpts.ConsumerGroup).Result()
 	if err != nil {
 		return 0, err
 	}
@@ -448,7 +451,7 @@ func (mq *MessageQueue) cleanIdleConsumers(ctx context.Context) (int, error) {
 		}
 
 		if consumer.Idle > mq.opts.ConsumeOpts.ConsumerIdleTimeout {
-			_ = mq.opts.Client.XGroupDelConsumer(ctx, mq.streamKeyString(), mq.opts.ConsumeOpts.ConsumerGroup, consumer.Name).Err()
+			_ = mq.opts.Client.XGroupDelConsumer(ctx, mq.streamString(), mq.opts.ConsumeOpts.ConsumerGroup, consumer.Name).Err()
 		}
 	}
 	return 0, nil
@@ -459,11 +462,11 @@ func (q *MessageQueue) retry(ctx context.Context, msg *Message) error {
 	// and lose a message.
 	pipe := q.opts.Client.TxPipeline()
 	// When Release a msg, ack it before we delete msg.
-	if err := pipe.XAck(ctx, q.streamKeyString(), q.opts.ConsumeOpts.ConsumerGroup, msg.GetId()).Err(); err != nil {
+	if err := pipe.XAck(ctx, q.streamString(), q.opts.ConsumeOpts.ConsumerGroup, msg.GetId()).Err(); err != nil {
 		return err
 	}
 
-	err := pipe.XDel(ctx, q.streamKeyString(), msg.GetId()).Err()
+	err := pipe.XDel(ctx, q.streamString(), msg.GetId()).Err()
 	if err != nil {
 		return err
 	}

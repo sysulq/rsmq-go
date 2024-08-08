@@ -18,8 +18,8 @@ func main() {
 	})
 
 	queue := rsmq.New(rsmq.Options{
-		Client:    cc,
-		StreamKey: "stream_produce_and_consume",
+		Client: cc,
+		Stream: "stream_produce_and_consume",
 		ConsumeOpts: rsmq.ConsumeOpts{
 			ConsumerGroup:   "task_group",
 			AutoCreateGroup: true,

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/stretchr/testify/require"
 )
 
 func TestCleanIdleConsumer(t *testing.T) {
@@ -13,13 +14,14 @@ func TestCleanIdleConsumer(t *testing.T) {
 	})
 
 	queue := New(Options{
-		Client:    cc,
-		StreamKey: "stream_produce_and_consume",
+		Client: cc,
+		Stream: "stream_produce_and_consume",
 		ConsumeOpts: ConsumeOpts{
 			ConsumerGroup:   "task_group",
 			AutoCreateGroup: true,
 		},
 	})
 
-	queue.cleanIdleConsumers(context.Background())
+	_, err := queue.cleanIdleConsumers(context.Background())
+	require.Nil(t, err)
 }

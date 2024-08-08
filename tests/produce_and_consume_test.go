@@ -20,8 +20,8 @@ func TestProduceAndConsume(t *testing.T) {
 	})
 
 	queue := rsmq.New(rsmq.Options{
-		Client:    cc,
-		StreamKey: "stream_produce_and_consume",
+		Client: cc,
+		Stream: "stream_produce_and_consume",
 		ConsumeOpts: rsmq.ConsumeOpts{
 			ConsumerGroup:   "task_group",
 			AutoCreateGroup: true,
@@ -57,7 +57,7 @@ func TestProduceAndConsume(t *testing.T) {
 			context.Background(),
 			func(ctx context.Context, task *rsmq.Message) *rsmq.Result {
 				var payload map[string]interface{}
-				json.Unmarshal(task.Payload, &payload)
+				_ = json.Unmarshal(task.Payload, &payload)
 				fmt.Printf("Processing task: %s, payload: %v\n", task.Id, payload)
 
 				results <- payload
@@ -102,8 +102,8 @@ func TestClose(t *testing.T) {
 	})
 
 	queue := rsmq.New(rsmq.Options{
-		Client:    cc,
-		StreamKey: "stream_produce_and_consume",
+		Client: cc,
+		Stream: "stream_produce_and_consume",
 		ConsumeOpts: rsmq.ConsumeOpts{
 			ConsumerGroup:   "task_group",
 			AutoCreateGroup: true,

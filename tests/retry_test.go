@@ -20,8 +20,8 @@ func TestRetry(t *testing.T) {
 	})
 
 	queue := rsmq.New(rsmq.Options{
-		Client:    cc,
-		StreamKey: "retry",
+		Client: cc,
+		Stream: "retry",
 		ConsumeOpts: rsmq.ConsumeOpts{
 			ConsumerGroup:   "task_group",
 			AutoCreateGroup: true,
@@ -48,7 +48,7 @@ func TestRetry(t *testing.T) {
 			context.Background(),
 			func(ctx context.Context, task *rsmq.Message) *rsmq.Result {
 				var payload map[string]interface{}
-				json.Unmarshal(task.Payload, &payload)
+				_ = json.Unmarshal(task.Payload, &payload)
 				fmt.Printf("Processing task: %s, payload: %v\n", task.Id, payload)
 				count.Add(1)
 				return &rsmq.Result{
