@@ -3,6 +3,7 @@ package rsmq
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
@@ -15,12 +16,16 @@ func TestCleanIdleConsumer(t *testing.T) {
 
 	queue := New(Options{
 		Client: cc,
-		Stream: "stream_produce_and_consume",
+		Stream: "clean_idle_consumer",
 		ConsumeOpts: ConsumeOpts{
 			ConsumerGroup:   "task_group",
 			AutoCreateGroup: true,
 		},
 	})
+
+	go queue.Consume(context.Background(), nil)
+
+	time.Sleep(time.Second)
 
 	_, err := queue.cleanIdleConsumers(context.Background())
 	require.Nil(t, err)
