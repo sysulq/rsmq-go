@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/stretchr/testify/require"
 	"github.com/sysulq/rsmq-go"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
@@ -49,12 +50,13 @@ func TestOtel(t *testing.T) {
 	ctx, span := tp.Tracer("rsmq").Start(context.Background(), "otel")
 	defer span.End()
 
-	queue.Enqueue(ctx, task)
+	err := queue.Enqueue(ctx, task)
+	require.Nil(t, err)
 
 	consumeDone := make(chan struct{})
 
 	go func() {
-		queue.Consume(context.Background(), func(ctx context.Context, task *rsmq.Message) *rsmq.Result {
+		_ = queue.Consume(context.Background(), func(ctx context.Context, task *rsmq.Message) *rsmq.Result {
 			fmt.Println(task.String(), task.GetMetadata())
 			fmt.Println(trace.SpanContextFromContext(ctx).TraceID().String())
 
