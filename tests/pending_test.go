@@ -31,10 +31,10 @@ func TestPending(t *testing.T) {
 	})
 	defer queuePending.Close()
 	go func() {
-		queuePending.Consume(context.Background(), func(ctx context.Context, m *rsmq.Message) *rsmq.Result {
+		queuePending.Consume(context.Background(), func(ctx context.Context, m *rsmq.Message) error {
 			time.Sleep(10 * time.Second)
 			fmt.Println("Pending consumer", m.Id)
-			return &rsmq.Result{}
+			return nil
 		})
 	}()
 
@@ -66,11 +66,11 @@ func TestPending(t *testing.T) {
 	go func() {
 		err := queue.Consume(
 			context.Background(),
-			func(ctx context.Context, task *rsmq.Message) *rsmq.Result {
+			func(ctx context.Context, task *rsmq.Message) error {
 				var payload map[string]interface{}
 				_ = json.Unmarshal(task.Payload, &payload)
 				count.Add(1)
-				return &rsmq.Result{}
+				return nil
 			},
 		)
 		if err != nil {

@@ -56,15 +56,13 @@ func TestOtel(t *testing.T) {
 	consumeDone := make(chan struct{})
 
 	go func() {
-		_ = queue.Consume(context.Background(), func(ctx context.Context, task *rsmq.Message) *rsmq.Result {
+		_ = queue.Consume(context.Background(), func(ctx context.Context, task *rsmq.Message) error {
 			fmt.Println(task.String(), task.GetMetadata())
 			fmt.Println(trace.SpanContextFromContext(ctx).TraceID().String())
 
 			consumeDone <- struct{}{}
 
-			return &rsmq.Result{
-				Id: task.Id,
-			}
+			return nil
 		})
 	}()
 

@@ -55,16 +55,14 @@ func TestProduceAndConsume(t *testing.T) {
 	go func() {
 		err := queue.Consume(
 			context.Background(),
-			func(ctx context.Context, task *rsmq.Message) *rsmq.Result {
+			func(ctx context.Context, task *rsmq.Message) error {
 				var payload map[string]interface{}
 				_ = json.Unmarshal(task.Payload, &payload)
 				fmt.Printf("Processing task: %s, payload: %v\n", task.Id, payload)
 
 				results <- payload
 
-				return &rsmq.Result{
-					Id: task.Id,
-				}
+				return nil
 			},
 		)
 		if err != nil {
