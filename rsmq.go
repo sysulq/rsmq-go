@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"github.com/robfig/cron/v3"
+	rsmqv1 "github.com/sysulq/rsmq-go/rsmq/v1"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/propagation"
@@ -21,6 +22,9 @@ import (
 	"google.golang.org/protobuf/proto"
 	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 )
+
+// Message represents a message in the queue
+type Message = rsmqv1.Message
 
 // MessageHandler is a function that processes a message and returns a result
 type MessageHandler func(context.Context, *Message) error
