@@ -370,12 +370,16 @@ func (mq *MessageQueue) consumeStream(ctx context.Context, handler MessageHandle
 					return
 				}
 
-				ctx := otel.GetTextMapPropagator().Extract(context.Background(), propagation.MapCarrier(m.GetMetadata()))
-				ctx, span := mq.opts.Tracer.Start(ctx, "ConsumeStream", trace.WithAttributes(
-					attribute.String("stream", mq.opts.Stream),
-					attribute.String("consumer_group", mq.opts.ConsumeOpts.ConsumerGroup),
-				))
-				defer span.End()
+				ctx := context.Background()
+				if mq.opts.Tracer != nil {
+					ctx = otel.GetTextMapPropagator().Extract(ctx, propagation.MapCarrier(m.GetMetadata()))
+					var span trace.Span
+					ctx, span = mq.opts.Tracer.Start(ctx, "ConsumeStream", trace.WithAttributes(
+						attribute.String("stream", mq.opts.Stream),
+						attribute.String("consumer_group", mq.opts.ConsumeOpts.ConsumerGroup),
+					))
+					defer span.End()
+				}
 
 				result := handler(ctx, m)
 
