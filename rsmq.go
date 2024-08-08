@@ -155,7 +155,7 @@ func New(opts Options) *MessageQueue {
             end
         end
 
-        return messages
+        return processed
     `)
 
 	mq := &MessageQueue{
@@ -356,17 +356,12 @@ func (mq *MessageQueue) Close() error {
 func (mq *MessageQueue) processDelayedMessages(ctx context.Context) (int, error) {
 	now := time.Now().Unix()
 
-	result, err := mq.processScript.Run(ctx, mq.opts.Client, []string{mq.streamDelayKeyString(), mq.streamString()}, now).Result()
+	result, err := mq.processScript.Run(ctx, mq.opts.Client, []string{mq.streamDelayKeyString(), mq.streamString()}, now).Int()
 	if err != nil {
 		return 0, fmt.Errorf("failed to process delayed messages: %w", err)
 	}
 
-	messages, ok := result.([]interface{})
-	if !ok {
-		return 0, fmt.Errorf("unexpected result type from Lua script")
-	}
-
-	return len(messages), nil
+	return result, nil
 }
 
 func (mq *MessageQueue) consumeStream(ctx context.Context, handler MessageHandler) (uint32, error) {
@@ -556,7 +551,7 @@ func (q *MessageQueue) retry(ctx context.Context, msg *Message) error {
 	// Make the delete and re-queue operation atomic in case we crash midway
 	// and lose a message.
 	pipe := q.opts.Client.TxPipeline()
-	// When Release a msg, ack it before we delete msg.
+	// When retry a msg, ack it before we delete msg.
 	if err := pipe.XAck(ctx, q.streamString(), q.opts.ConsumeOpts.ConsumerGroup, msg.GetId()).Err(); err != nil {
 		return err
 	}
