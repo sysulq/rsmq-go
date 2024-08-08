@@ -4,13 +4,24 @@ package rsmq.v1;
 
 import "google/protobuf/timestamp.proto";
 
+// The message object that is sent to the message queue.
 message Message {
+  // The unique identifier of the message.
   string id = 1;
+  // The payload of the message.
   bytes payload = 2;
-  string stream_key = 3;
+  // The stream of the message.
+  string stream = 3;
+  // The tag of the message.
   string tag = 4;
+  // The metadata of the message.
   map<string, string> metadata = 5;
+  // The timestamp when the message was born.
   google.protobuf.Timestamp born_timestamp = 6;
+  // The timestamp when the message was delivered.
   google.protobuf.Timestamp deliver_timestamp = 7;
+  // The retry count of the message.
   uint32 retry_count = 8;
+  // The original message id of the message.
+  string origin_msg_id = 9;
 }

@@ -216,7 +216,7 @@ func (mq *MessageQueue) Enqueue(ctx context.Context, message *Message) error {
 		message.DeliverTimestamp = message.GetBornTimestamp()
 	}
 
-	message.StreamKey = mq.streamString()
+	message.Stream = mq.streamString()
 
 	if span := trace.SpanFromContext(ctx); span.SpanContext().IsValid() {
 		ctx, span = mq.opts.Tracer.Start(ctx, "Enqueue", trace.WithAttributes(
@@ -477,21 +477,22 @@ func (mq *MessageQueue) processSingleMessage(ctx context.Context, msg redis.XMes
 			return fmt.Errorf("failed to acknowledge message %s: %w", msg.ID, err)
 		}
 	} else {
+		msg := proto.Clone(m).(*Message)
 		// Message processing failed, implement retry logic
-		if atomic.AddUint32(&m.RetryCount, 1) <= mq.opts.ConsumeOpts.MaxRetryLimit {
+		if atomic.AddUint32(&msg.RetryCount, 1) <= mq.opts.ConsumeOpts.MaxRetryLimit {
 			// Re-enqueue the message with updated retry count
-			if err := mq.retry(ctx, m); err != nil {
-				return fmt.Errorf("failed to re-enqueue message %s: %w", m.Id, err)
+			if err := mq.retry(ctx, msg); err != nil {
+				return fmt.Errorf("failed to re-enqueue message: %w", err)
 			}
-			slog.InfoContext(ctx, "message requeued for retry", "id", m.Id, "retry_count", m.RetryCount)
+			slog.InfoContext(ctx, "message requeued for retry", "retry_count", msg.RetryCount)
 		} else {
 			// Max retries reached, handle accordingly (e.g., move to dead letter queue)
-			slog.WarnContext(ctx, "message reached max retry limit", "id", m.Id, "error", result.Error)
+			slog.WarnContext(ctx, "message reached max retry limit", "error", result.Error)
 			// Here you might want to implement dead letter queue logic
 		}
 		// Acknowledge the message to remove it from the pending list
-		if err := mq.opts.Client.XAck(ctx, mq.streamString(), mq.opts.ConsumeOpts.ConsumerGroup, msg.ID).Err(); err != nil {
-			return fmt.Errorf("failed to acknowledge failed message %s: %w", msg.ID, err)
+		if err := mq.opts.Client.XAck(ctx, mq.streamString(), mq.opts.ConsumeOpts.ConsumerGroup, msg.GetId()).Err(); err != nil {
+			return fmt.Errorf("failed to acknowledge failed message: %w", err)
 		}
 	}
 
@@ -564,6 +565,11 @@ func (q *MessageQueue) retry(ctx context.Context, msg *Message) error {
 	err := pipe.XDel(ctx, q.streamString(), msg.GetId()).Err()
 	if err != nil {
 		return err
+	}
+
+	// Set the origin message id if it's not set
+	if msg.OriginMsgId == "" {
+		msg.OriginMsgId = msg.Id
 	}
 
 	msg.DeliverTimestamp = timestamppb.New(

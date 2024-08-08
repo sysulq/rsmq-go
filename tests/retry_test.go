@@ -43,6 +43,8 @@ func TestRetry(t *testing.T) {
 	}
 
 	var count atomic.Int32
+
+	results := make(chan *rsmq.Message, 4)
 	// Consume tasks
 	go func() {
 		err := queue.Consume(
@@ -52,6 +54,8 @@ func TestRetry(t *testing.T) {
 				_ = json.Unmarshal(task.Payload, &payload)
 				fmt.Printf("Processing task: %s, payload: %v\n", task.Id, payload)
 				count.Add(1)
+				results <- task
+
 				return errors.New("retry test")
 			},
 		)
@@ -62,4 +66,18 @@ func TestRetry(t *testing.T) {
 
 	time.Sleep(time.Second)
 	require.Equal(t, int32(4), count.Load())
+
+	payloads := make([]*rsmq.Message, 4)
+	for i := 0; i < 4; i++ {
+		payloads[i] = <-results
+	}
+
+	fmt.Printf("Payloads:\n%+v\n", payloads)
+
+	originMsgId := payloads[0].Id
+	require.Empty(t, payloads[0].GetOriginMsgId())
+	for i := 1; i < 4; i++ {
+		require.Equal(t, originMsgId, payloads[i].GetOriginMsgId())
+		require.EqualValues(t, i, payloads[i].GetRetryCount())
+	}
 }
