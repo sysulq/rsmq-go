@@ -32,11 +32,13 @@ type MessageQueue struct {
 	processScript *redis.Script
 	cron          *cron.Cron
 	redisLock     *redislock.Client
+	once          sync.Once
 }
 
 type Options struct {
 	Client      *redis.Client
 	Stream      string
+	MaxLen      int64
 	Tracer      trace.Tracer
 	ConsumeOpts ConsumeOpts
 }
@@ -49,6 +51,10 @@ func New(opts Options) *MessageQueue {
 
 	if opts.Stream == "" {
 		panic("stream key is required")
+	}
+
+	if opts.MaxLen == 0 {
+		opts.MaxLen = 1000
 	}
 
 	if opts.ConsumeOpts.BatchSize == 0 {
@@ -120,20 +126,6 @@ func New(opts Options) *MessageQueue {
 		redisLock:     redislock.New(opts.Client),
 	}
 
-	if opts.ConsumeOpts.AutoCreateGroup {
-		err := mq.ensureConsumerGroup(context.Background(), opts.ConsumeOpts.ConsumerGroup)
-		if err != nil {
-			slog.Error("failed to ensure consumer group", "error", err)
-			return nil
-		}
-	}
-
-	mq.cron.Schedule(cron.Every(opts.ConsumeOpts.IdleConsumerCleanInterval), cron.FuncJob(func() {
-		_, _ = mq.cleanIdleConsumers(context.Background())
-	}))
-
-	mq.cron.Start()
-
 	return mq
 }
 
@@ -158,6 +150,8 @@ func (mq *MessageQueue) enqueueMessage(ctx context.Context, pipe redis.Cmdable, 
 		// Add to stream
 		err = pipe.XAdd(ctx, &redis.XAddArgs{
 			Stream: mq.streamString(),
+			MaxLen: mq.opts.MaxLen,
+			Approx: true,
 			Values: map[string]interface{}{"message": string(messageBytes)},
 		}).Err()
 		if err != nil {
@@ -242,6 +236,26 @@ type ConsumeOpts struct {
 // Consume starts consuming messages from the queue
 func (mq *MessageQueue) Consume(ctx context.Context, handler MessageHandler) error {
 	opts := mq.opts.ConsumeOpts
+
+	if opts.ConsumerGroup == "" {
+		return fmt.Errorf("consumer group is required")
+	}
+
+	mq.once.Do(func() {
+		if opts.AutoCreateGroup {
+			err := mq.ensureConsumerGroup(context.Background(), opts.ConsumerGroup)
+			if err != nil {
+				slog.Error("failed to ensure consumer group", "error", err)
+				return
+			}
+		}
+
+		mq.cron.Schedule(cron.Every(opts.IdleConsumerCleanInterval), cron.FuncJob(func() {
+			_, _ = mq.cleanIdleConsumers(context.Background())
+		}))
+
+		mq.cron.Start()
+	})
 
 	currentPollInterval := opts.MinPollInterval
 
