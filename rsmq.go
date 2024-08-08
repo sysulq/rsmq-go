@@ -185,7 +185,7 @@ func (mq *MessageQueue) enqueueMessage(ctx context.Context, pipe redis.Cmdable, 
 			return fmt.Errorf("failed to add message to delayed set: %w", err)
 		}
 
-		slog.Debug("added message to delayed set", "id", msg.Id, "deliverTimestamp", msg.DeliverTimestamp)
+		slog.DebugContext(ctx, "added message to delayed set", "id", msg.Id, "deliverTimestamp", msg.DeliverTimestamp)
 	} else {
 		// Add to stream
 		err = pipe.XAdd(ctx, &redis.XAddArgs{
@@ -198,7 +198,7 @@ func (mq *MessageQueue) enqueueMessage(ctx context.Context, pipe redis.Cmdable, 
 			return fmt.Errorf("failed to add message to stream: %w", err)
 		}
 
-		slog.Debug("added message to stream", "id", msg.Id)
+		slog.DebugContext(ctx, "added message to stream", "id", msg.Id)
 	}
 
 	return nil
@@ -268,7 +268,7 @@ func (mq *MessageQueue) Consume(ctx context.Context, handler MessageHandler) err
 		if opts.AutoCreateGroup {
 			err := mq.ensureConsumerGroup(context.Background(), opts.ConsumerGroup)
 			if err != nil {
-				slog.Error("failed to ensure consumer group", "error", err)
+				slog.ErrorContext(ctx, "failed to ensure consumer group", "error", err)
 				return
 			}
 		}
@@ -296,13 +296,13 @@ func (mq *MessageQueue) Consume(ctx context.Context, handler MessageHandler) err
 			// Process delayed messages
 			delayedProcessed, err := mq.processDelayedMessages(ctx)
 			if err != nil {
-				slog.Error("failed to process delayed messages", "error", err)
+				slog.ErrorContext(ctx, "failed to process delayed messages", "error", err)
 			}
 
 			// Consume from stream
 			streamProcessed, err := mq.consumeStream(ctx, handler)
 			if err != nil {
-				slog.Error("failed to consume from stream", "error", err)
+				slog.ErrorContext(ctx, "failed to consume from stream", "error", err)
 			}
 
 			// Adjust polling interval based on activity
@@ -315,7 +315,7 @@ func (mq *MessageQueue) Consume(ctx context.Context, handler MessageHandler) err
 			// Wait for the next poll, but don't exceed the time until the next delayed message
 			nextDelayedTime, err := mq.getNextDelayedMessageTime(ctx)
 			if err != nil {
-				slog.Error("failed to get next delayed message time", "error", err)
+				slog.ErrorContext(ctx, "failed to get next delayed message time", "error", err)
 			} else if !nextDelayedTime.IsZero() {
 				currentPollInterval = min(currentPollInterval, time.Until(nextDelayedTime))
 			}
@@ -378,7 +378,7 @@ func (mq *MessageQueue) consumeStream(ctx context.Context, handler MessageHandle
 	if normalProcessed == 0 {
 		pendingProcessed, err := mq.processPendingMessages(ctx, handler)
 		if err != nil {
-			slog.Error("failed to process pending messages", "error", err)
+			slog.ErrorContext(ctx, "failed to process pending messages", "error", err)
 		}
 		processed += pendingProcessed
 	}
@@ -414,7 +414,7 @@ func (mq *MessageQueue) processNormalMessages(ctx context.Context, handler Messa
 	semaphore := make(chan struct{}, mq.opts.ConsumeOpts.MaxConcurrency)
 
 	for _, stream := range streams {
-		slog.Debug("read messages", "stream", stream.Stream, "count", len(stream.Messages), "consumer", mq.opts.ConsumeOpts.ConsumerID)
+		slog.DebugContext(ctx, "read messages", "stream", stream.Stream, "count", len(stream.Messages), "consumer", mq.opts.ConsumeOpts.ConsumerID)
 
 		for _, message := range stream.Messages {
 
@@ -457,7 +457,7 @@ func (mq *MessageQueue) processSingleMessage(ctx context.Context, msg redis.XMes
 		return fmt.Errorf("failed to unmarshal message: %w", err)
 	}
 
-	slog.Debug("processing message", "msg", m.String())
+	slog.DebugContext(ctx, "processing message", "msg", m.String())
 
 	if mq.opts.Tracer != nil {
 		ctx = otel.GetTextMapPropagator().Extract(ctx, propagation.MapCarrier(m.GetMetadata()))
@@ -483,10 +483,10 @@ func (mq *MessageQueue) processSingleMessage(ctx context.Context, msg redis.XMes
 			if err := mq.retry(ctx, m); err != nil {
 				return fmt.Errorf("failed to re-enqueue message %s: %w", m.Id, err)
 			}
-			slog.Info("message requeued for retry", "id", m.Id, "retry_count", m.RetryCount)
+			slog.InfoContext(ctx, "message requeued for retry", "id", m.Id, "retry_count", m.RetryCount)
 		} else {
 			// Max retries reached, handle accordingly (e.g., move to dead letter queue)
-			slog.Warn("message reached max retry limit", "id", m.Id, "error", result.Error)
+			slog.WarnContext(ctx, "message reached max retry limit", "id", m.Id, "error", result.Error)
 			// Here you might want to implement dead letter queue logic
 		}
 		// Acknowledge the message to remove it from the pending list
@@ -529,7 +529,7 @@ func generateConsumerID() string {
 func (mq *MessageQueue) cleanIdleConsumers(ctx context.Context) (int, error) {
 	lock, err := mq.redisLock.Obtain(ctx, "rsmq:lock:"+mq.opts.Stream, 3*time.Second, &redislock.Options{})
 	if err != nil && err != redislock.ErrNotObtained {
-		slog.Error("failed to obtain lock", "error", err)
+		slog.ErrorContext(ctx, "failed to obtain lock", "error", err)
 		return 0, err
 	}
 	defer func() { _ = lock.Release(ctx) }()
@@ -598,13 +598,18 @@ func (mq *MessageQueue) processPendingMessages(ctx context.Context, handler Mess
 		Count:    mq.opts.ConsumeOpts.BatchSize,
 	}).Result()
 	if err != nil {
-		slog.Error("failed to claim pending message", "error", err)
+		slog.ErrorContext(ctx, "failed to claim pending message", "error", err)
 		return 0, err
 	}
 
 	var processed uint32
 	for _, msg := range claimed {
-		mq.processSingleMessage(ctx, msg, handler)
+		err := mq.processSingleMessage(ctx, msg, handler)
+		if err != nil {
+			slog.ErrorContext(ctx, "failed to process pending message", "error", err)
+			continue
+		}
+		processed++
 	}
 
 	return processed, nil

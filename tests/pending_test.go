@@ -31,7 +31,7 @@ func TestPending(t *testing.T) {
 	})
 	defer queuePending.Close()
 	go func() {
-		queuePending.Consume(context.Background(), func(ctx context.Context, m *rsmq.Message) error {
+		_ = queuePending.Consume(context.Background(), func(ctx context.Context, m *rsmq.Message) error {
 			time.Sleep(10 * time.Second)
 			fmt.Println("Pending consumer", m.Id)
 			return nil
