@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+package rsmq;
+
+import "google/protobuf/timestamp.proto";
+
+message Message {
+  string id = 1;
+  bytes payload = 2;
+  string stream_key = 3;
+  string tag = 4;
+  map<string, string> metadata = 5;
+  google.protobuf.Timestamp born_timestamp = 6;
+  google.protobuf.Timestamp deliver_timestamp = 7;
+  uint32 retry_count = 8;
+}
+
+message Result {
+  string id = 1;
+  string error = 2;
+}
