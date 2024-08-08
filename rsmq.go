@@ -425,54 +425,12 @@ func (mq *MessageQueue) processNormalMessages(ctx context.Context, handler Messa
 				defer wg.Done()
 				defer func() { <-semaphore }() // 释放信号量
 
-				m, err := mq.unmarshalMessage(msg)
+				err := mq.processSingleMessage(ctx, msg, handler)
 				if err != nil {
-					errors <- fmt.Errorf("failed to unmarshal message: %w", err)
-					return
+					errors <- err
 				}
 
-				slog.Debug("processing message", "msg", m.String())
-
-				ctx := context.Background()
-				if mq.opts.Tracer != nil {
-					ctx = otel.GetTextMapPropagator().Extract(ctx, propagation.MapCarrier(m.GetMetadata()))
-					var span trace.Span
-					ctx, span = mq.opts.Tracer.Start(ctx, "ConsumeStream", trace.WithAttributes(
-						attribute.String("stream", mq.opts.Stream),
-						attribute.String("consumer_group", mq.opts.ConsumeOpts.ConsumerGroup),
-					))
-					defer span.End()
-				}
-
-				result := handler(ctx, m)
-
-				if result == nil {
-					// Message processed successfully
-					if err := mq.opts.Client.XAck(ctx, mq.streamString(), mq.opts.ConsumeOpts.ConsumerGroup, msg.ID).Err(); err != nil {
-						errors <- fmt.Errorf("failed to acknowledge message %s: %w", msg.ID, err)
-						return
-					}
-					atomic.AddUint32(&processed, 1)
-				} else {
-					// Message processing failed, implement retry logic
-					if atomic.AddUint32(&m.RetryCount, 1) <= mq.opts.ConsumeOpts.MaxRetryLimit {
-						// Re-enqueue the message with updated retry count
-						if err := mq.retry(ctx, m); err != nil {
-							errors <- fmt.Errorf("failed to re-enqueue message %s: %w", m.Id, err)
-							return
-						}
-						slog.Info("message requeued for retry", "id", m.Id, "retry_count", m.RetryCount)
-					} else {
-						// Max retries reached, handle accordingly (e.g., move to dead letter queue)
-						slog.Warn("message reached max retry limit", "id", m.Id, "error", result.Error)
-						// Here you might want to implement dead letter queue logic
-					}
-					// Acknowledge the message to remove it from the pending list
-					if err := mq.opts.Client.XAck(ctx, mq.streamString(), mq.opts.ConsumeOpts.ConsumerGroup, msg.ID).Err(); err != nil {
-						errors <- fmt.Errorf("failed to acknowledge failed message %s: %w", msg.ID, err)
-						return
-					}
-				}
+				atomic.AddUint32(&processed, 1)
 			}(message)
 		}
 	}
@@ -491,6 +449,53 @@ func (mq *MessageQueue) processNormalMessages(ctx context.Context, handler Messa
 	}
 
 	return processed, nil
+}
+
+func (mq *MessageQueue) processSingleMessage(ctx context.Context, msg redis.XMessage, handler MessageHandler) error {
+	m, err := mq.unmarshalMessage(msg)
+	if err != nil {
+		return fmt.Errorf("failed to unmarshal message: %w", err)
+	}
+
+	slog.Debug("processing message", "msg", m.String())
+
+	if mq.opts.Tracer != nil {
+		ctx = otel.GetTextMapPropagator().Extract(ctx, propagation.MapCarrier(m.GetMetadata()))
+		var span trace.Span
+		ctx, span = mq.opts.Tracer.Start(ctx, "ConsumeStream", trace.WithAttributes(
+			attribute.String("stream", mq.opts.Stream),
+			attribute.String("consumer_group", mq.opts.ConsumeOpts.ConsumerGroup),
+		))
+		defer span.End()
+	}
+
+	result := handler(ctx, m)
+
+	if result == nil {
+		// Message processed successfully
+		if err := mq.opts.Client.XAck(ctx, mq.streamString(), mq.opts.ConsumeOpts.ConsumerGroup, msg.ID).Err(); err != nil {
+			return fmt.Errorf("failed to acknowledge message %s: %w", msg.ID, err)
+		}
+	} else {
+		// Message processing failed, implement retry logic
+		if atomic.AddUint32(&m.RetryCount, 1) <= mq.opts.ConsumeOpts.MaxRetryLimit {
+			// Re-enqueue the message with updated retry count
+			if err := mq.retry(ctx, m); err != nil {
+				return fmt.Errorf("failed to re-enqueue message %s: %w", m.Id, err)
+			}
+			slog.Info("message requeued for retry", "id", m.Id, "retry_count", m.RetryCount)
+		} else {
+			// Max retries reached, handle accordingly (e.g., move to dead letter queue)
+			slog.Warn("message reached max retry limit", "id", m.Id, "error", result.Error)
+			// Here you might want to implement dead letter queue logic
+		}
+		// Acknowledge the message to remove it from the pending list
+		if err := mq.opts.Client.XAck(ctx, mq.streamString(), mq.opts.ConsumeOpts.ConsumerGroup, msg.ID).Err(); err != nil {
+			return fmt.Errorf("failed to acknowledge failed message %s: %w", msg.ID, err)
+		}
+	}
+
+	return nil
 }
 
 func (mq *MessageQueue) getNextDelayedMessageTime(ctx context.Context) (time.Time, error) {
@@ -599,23 +604,7 @@ func (mq *MessageQueue) processPendingMessages(ctx context.Context, handler Mess
 
 	var processed uint32
 	for _, msg := range claimed {
-		m, err := mq.unmarshalMessage(msg)
-		if err != nil {
-			slog.Error("failed to unmarshal claimed message", "message_id", msg.ID, "error", err)
-			continue
-		}
-
-		result := handler(ctx, m)
-		if result == nil {
-			if err := mq.opts.Client.XAck(ctx, mq.streamString(), mq.opts.ConsumeOpts.ConsumerGroup, msg.ID).Err(); err != nil {
-				slog.Error("failed to acknowledge claimed message", "message_id", msg.ID, "error", err)
-			} else {
-				atomic.AddUint32(&processed, 1)
-			}
-		} else {
-			slog.Error("failed to process claimed message", "message_id", msg.ID, "error", result.Error)
-			// 可以在这里实现重试逻辑
-		}
+		mq.processSingleMessage(ctx, msg, handler)
 	}
 
 	return processed, nil
