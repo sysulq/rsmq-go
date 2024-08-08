@@ -23,7 +23,7 @@ func TestCleanIdleConsumer(t *testing.T) {
 		},
 	})
 
-	go queue.Consume(context.Background(), nil)
+	go func() { _ = queue.Consume(context.Background(), nil) }()
 
 	time.Sleep(time.Second)
 
