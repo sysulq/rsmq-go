@@ -14,6 +14,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"github.com/robfig/cron/v3"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/protobuf/proto"
 	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -33,6 +37,7 @@ type MessageQueue struct {
 type Options struct {
 	Client      *redis.Client
 	Stream      string
+	Tracer      trace.Tracer
 	ConsumeOpts ConsumeOpts
 }
 
@@ -172,6 +177,17 @@ func (mq *MessageQueue) Enqueue(ctx context.Context, message *Message) error {
 	}
 
 	message.StreamKey = mq.streamString()
+
+	if span := trace.SpanFromContext(ctx); span.SpanContext().IsValid() {
+		ctx, span = mq.opts.Tracer.Start(ctx, "Enqueue", trace.WithAttributes(
+			attribute.String("message.id", message.Id),
+			attribute.String("stream", mq.opts.Stream),
+		))
+		defer span.End()
+	}
+
+	message.Metadata = make(map[string]string)
+	otel.GetTextMapPropagator().Inject(ctx, propagation.MapCarrier(message.Metadata))
 
 	return mq.enqueueMessage(ctx, mq.opts.Client, message)
 }
@@ -353,6 +369,13 @@ func (mq *MessageQueue) consumeStream(ctx context.Context, handler MessageHandle
 					errors <- fmt.Errorf("failed to unmarshal message: %w", err)
 					return
 				}
+
+				ctx := otel.GetTextMapPropagator().Extract(context.Background(), propagation.MapCarrier(m.GetMetadata()))
+				ctx, span := mq.opts.Tracer.Start(ctx, "ConsumeStream", trace.WithAttributes(
+					attribute.String("stream", mq.opts.Stream),
+					attribute.String("consumer_group", mq.opts.ConsumeOpts.ConsumerGroup),
+				))
+				defer span.End()
 
 				result := handler(ctx, m)
 
