@@ -14,8 +14,3 @@ message Message {
   google.protobuf.Timestamp deliver_timestamp = 7;
   uint32 retry_count = 8;
 }
-
-message Result {
-  string id = 1;
-  string error = 2;
-}

@@ -30,13 +30,11 @@ func main() {
 	// Consume tasks
 	err := queue.Consume(
 		context.Background(),
-		func(ctx context.Context, task *rsmq.Message) *rsmq.Result {
+		func(ctx context.Context, task *rsmq.Message) error {
 			var payload map[string]interface{}
 			json.Unmarshal(task.Payload, &payload)
 
-			return &rsmq.Result{
-				Id: task.Id,
-			}
+			return nil
 		},
 	)
 	if err != nil {

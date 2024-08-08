@@ -124,61 +124,6 @@ func (x *Message) GetRetryCount() uint32 {
 	return 0
 }
 
-type Result struct {
-	state         protoimpl.MessageState
-	sizeCache     protoimpl.SizeCache
-	unknownFields protoimpl.UnknownFields
-
-	Id    string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	Error string `protobuf:"bytes,2,opt,name=error,proto3" json:"error,omitempty"`
-}
-
-func (x *Result) Reset() {
-	*x = Result{}
-	if protoimpl.UnsafeEnabled {
-		mi := &file_rsmq_v1_mq_proto_msgTypes[1]
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		ms.StoreMessageInfo(mi)
-	}
-}
-
-func (x *Result) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*Result) ProtoMessage() {}
-
-func (x *Result) ProtoReflect() protoreflect.Message {
-	mi := &file_rsmq_v1_mq_proto_msgTypes[1]
-	if protoimpl.UnsafeEnabled && x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use Result.ProtoReflect.Descriptor instead.
-func (*Result) Descriptor() ([]byte, []int) {
-	return file_rsmq_v1_mq_proto_rawDescGZIP(), []int{1}
-}
-
-func (x *Result) GetId() string {
-	if x != nil {
-		return x.Id
-	}
-	return ""
-}
-
-func (x *Result) GetError() string {
-	if x != nil {
-		return x.Error
-	}
-	return ""
-}
-
 var File_rsmq_v1_mq_proto protoreflect.FileDescriptor
 
 var file_rsmq_v1_mq_proto_rawDesc = []byte{
@@ -210,10 +155,7 @@ var file_rsmq_v1_mq_proto_rawDesc = []byte{
 	0x4d, 0x65, 0x74, 0x61, 0x64, 0x61, 0x74, 0x61, 0x45, 0x6e, 0x74, 0x72, 0x79, 0x12, 0x10, 0x0a,
 	0x03, 0x6b, 0x65, 0x79, 0x18, 0x01, 0x20, 0x01, 0x28, 0x09, 0x52, 0x03, 0x6b, 0x65, 0x79, 0x12,
 	0x14, 0x0a, 0x05, 0x76, 0x61, 0x6c, 0x75, 0x65, 0x18, 0x02, 0x20, 0x01, 0x28, 0x09, 0x52, 0x05,
-	0x76, 0x61, 0x6c, 0x75, 0x65, 0x3a, 0x02, 0x38, 0x01, 0x22, 0x2e, 0x0a, 0x06, 0x52, 0x65, 0x73,
-	0x75, 0x6c, 0x74, 0x12, 0x0e, 0x0a, 0x02, 0x69, 0x64, 0x18, 0x01, 0x20, 0x01, 0x28, 0x09, 0x52,
-	0x02, 0x69, 0x64, 0x12, 0x14, 0x0a, 0x05, 0x65, 0x72, 0x72, 0x6f, 0x72, 0x18, 0x02, 0x20, 0x01,
-	0x28, 0x09, 0x52, 0x05, 0x65, 0x72, 0x72, 0x6f, 0x72, 0x42, 0x7a, 0x0a, 0x0b, 0x63, 0x6f, 0x6d,
+	0x76, 0x61, 0x6c, 0x75, 0x65, 0x3a, 0x02, 0x38, 0x01, 0x42, 0x7a, 0x0a, 0x0b, 0x63, 0x6f, 0x6d,
 	0x2e, 0x72, 0x73, 0x6d, 0x71, 0x2e, 0x76, 0x31, 0x42, 0x07, 0x4d, 0x71, 0x50, 0x72, 0x6f, 0x74,
 	0x6f, 0x50, 0x01, 0x5a, 0x25, 0x67, 0x69, 0x74, 0x68, 0x75, 0x62, 0x2e, 0x63, 0x6f, 0x6d, 0x2f,
 	0x73, 0x79, 0x73, 0x75, 0x6c, 0x71, 0x2f, 0x72, 0x73, 0x6d, 0x71, 0x2f, 0x72, 0x73, 0x6d, 0x71,
@@ -236,17 +178,16 @@ func file_rsmq_v1_mq_proto_rawDescGZIP() []byte {
 	return file_rsmq_v1_mq_proto_rawDescData
 }
 
-var file_rsmq_v1_mq_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
+var file_rsmq_v1_mq_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
 var file_rsmq_v1_mq_proto_goTypes = []any{
 	(*Message)(nil),               // 0: rsmq.v1.Message
-	(*Result)(nil),                // 1: rsmq.v1.Result
-	nil,                           // 2: rsmq.v1.Message.MetadataEntry
-	(*timestamppb.Timestamp)(nil), // 3: google.protobuf.Timestamp
+	nil,                           // 1: rsmq.v1.Message.MetadataEntry
+	(*timestamppb.Timestamp)(nil), // 2: google.protobuf.Timestamp
 }
 var file_rsmq_v1_mq_proto_depIdxs = []int32{
-	2, // 0: rsmq.v1.Message.metadata:type_name -> rsmq.v1.Message.MetadataEntry
-	3, // 1: rsmq.v1.Message.born_timestamp:type_name -> google.protobuf.Timestamp
-	3, // 2: rsmq.v1.Message.deliver_timestamp:type_name -> google.protobuf.Timestamp
+	1, // 0: rsmq.v1.Message.metadata:type_name -> rsmq.v1.Message.MetadataEntry
+	2, // 1: rsmq.v1.Message.born_timestamp:type_name -> google.protobuf.Timestamp
+	2, // 2: rsmq.v1.Message.deliver_timestamp:type_name -> google.protobuf.Timestamp
 	3, // [3:3] is the sub-list for method output_type
 	3, // [3:3] is the sub-list for method input_type
 	3, // [3:3] is the sub-list for extension type_name
@@ -272,18 +213,6 @@ func file_rsmq_v1_mq_proto_init() {
 				return nil
 			}
 		}
-		file_rsmq_v1_mq_proto_msgTypes[1].Exporter = func(v any, i int) any {
-			switch v := v.(*Result); i {
-			case 0:
-				return &v.state
-			case 1:
-				return &v.sizeCache
-			case 2:
-				return &v.unknownFields
-			default:
-				return nil
-			}
-		}
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -291,7 +220,7 @@ func file_rsmq_v1_mq_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: file_rsmq_v1_mq_proto_rawDesc,
 			NumEnums:      0,
-			NumMessages:   3,
+			NumMessages:   2,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

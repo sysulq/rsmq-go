@@ -97,7 +97,7 @@ func New(opts Options) *MessageQueue {
 	}
 
 	if opts.ConsumeOpts.BatchSize == 0 {
-		opts.ConsumeOpts.BatchSize = 10
+		opts.ConsumeOpts.BatchSize = 100
 	}
 	if opts.ConsumeOpts.MaxPollInterval == 0 {
 		opts.ConsumeOpts.MaxPollInterval = time.Second
@@ -109,7 +109,7 @@ func New(opts Options) *MessageQueue {
 		opts.ConsumeOpts.BlockDuration = time.Millisecond * 100 // Default block duration
 	}
 	if opts.ConsumeOpts.MaxConcurrency == 0 {
-		opts.ConsumeOpts.MaxConcurrency = 20
+		opts.ConsumeOpts.MaxConcurrency = 100
 	}
 	if opts.ConsumeOpts.ConsumerID == "" {
 		opts.ConsumeOpts.ConsumerID = generateConsumerID()
@@ -396,7 +396,7 @@ func (mq *MessageQueue) processNormalMessages(ctx context.Context, handler Messa
 		Consumer: mq.opts.ConsumeOpts.ConsumerID,
 		Streams:  []string{mq.streamString(), ">"},
 		Count:    mq.opts.ConsumeOpts.BatchSize,
-		Block:    time.Second,
+		Block:    mq.opts.ConsumeOpts.BlockDuration,
 	}).Result()
 	if err != nil {
 		if err == redis.Nil {
