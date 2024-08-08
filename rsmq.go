@@ -81,6 +81,9 @@ func New(opts Options) *MessageQueue {
 	if opts.ConsumeOpts.PendingTimeout == 0 {
 		opts.ConsumeOpts.PendingTimeout = time.Minute
 	}
+	if opts.ConsumeOpts.IdleConsumerCleanInterval == 0 {
+		opts.ConsumeOpts.IdleConsumerCleanInterval = 5 * time.Minute
+	}
 
 	processScript := redis.NewScript(`
         local delayedSetKey = KEYS[1]
@@ -125,9 +128,9 @@ func New(opts Options) *MessageQueue {
 		}
 	}
 
-	_, _ = mq.cron.AddFunc("@every 5min", func() {
+	mq.cron.Schedule(cron.Every(opts.ConsumeOpts.IdleConsumerCleanInterval), cron.FuncJob(func() {
 		_, _ = mq.cleanIdleConsumers(context.Background())
-	})
+	}))
 
 	mq.cron.Start()
 
@@ -221,18 +224,19 @@ func (mq *MessageQueue) ensureConsumerGroup(ctx context.Context, group string) e
 
 // ConsumeOpts represents options for consuming messages
 type ConsumeOpts struct {
-	ConsumerGroup       string
-	ConsumerID          string
-	BatchSize           int64
-	MaxPollInterval     time.Duration
-	MinPollInterval     time.Duration
-	BlockDuration       time.Duration
-	AutoCreateGroup     bool
-	MaxConcurrency      uint32
-	ConsumerIdleTimeout time.Duration
-	MaxRetryLimit       uint32
-	RetryTimeWait       time.Duration
-	PendingTimeout      time.Duration
+	ConsumerGroup             string
+	ConsumerID                string
+	BatchSize                 int64
+	MaxPollInterval           time.Duration
+	MinPollInterval           time.Duration
+	BlockDuration             time.Duration
+	AutoCreateGroup           bool
+	MaxConcurrency            uint32
+	ConsumerIdleTimeout       time.Duration
+	MaxRetryLimit             uint32
+	RetryTimeWait             time.Duration
+	PendingTimeout            time.Duration
+	IdleConsumerCleanInterval time.Duration
 }
 
 // Consume starts consuming messages from the queue
@@ -545,51 +549,37 @@ func (mq *MessageQueue) unmarshalMessage(msg redis.XMessage) (*Message, error) {
 }
 
 func (mq *MessageQueue) processPendingMessages(ctx context.Context, handler MessageHandler) (uint32, error) {
-	pending, err := mq.opts.Client.XPendingExt(ctx, &redis.XPendingExtArgs{
-		Stream: mq.streamString(),
-		Group:  mq.opts.ConsumeOpts.ConsumerGroup,
-		Start:  "-",
-		End:    "+",
-		Idle:   mq.opts.ConsumeOpts.PendingTimeout,
-		Count:  mq.opts.ConsumeOpts.BatchSize,
+	claimed, _, err := mq.opts.Client.XAutoClaim(ctx, &redis.XAutoClaimArgs{
+		Stream:   mq.streamString(),
+		Group:    mq.opts.ConsumeOpts.ConsumerGroup,
+		Consumer: mq.opts.ConsumeOpts.ConsumerID,
+		Start:    "-",
+		MinIdle:  mq.opts.ConsumeOpts.PendingTimeout,
+		Count:    mq.opts.ConsumeOpts.BatchSize,
 	}).Result()
 	if err != nil {
-		return 0, fmt.Errorf("failed to get pending messages: %w", err)
+		slog.Error("failed to claim pending message", "error", err)
+		return 0, err
 	}
 
 	var processed uint32
-	for _, p := range pending {
-
-		claimed, err := mq.opts.Client.XClaim(ctx, &redis.XClaimArgs{
-			Stream:   mq.streamString(),
-			Group:    mq.opts.ConsumeOpts.ConsumerGroup,
-			Consumer: mq.opts.ConsumeOpts.ConsumerID,
-			MinIdle:  mq.opts.ConsumeOpts.PendingTimeout,
-			Messages: []string{p.ID},
-		}).Result()
+	for _, msg := range claimed {
+		m, err := mq.unmarshalMessage(msg)
 		if err != nil {
-			slog.Error("failed to claim pending message", "message_id", p.ID, "error", err)
+			slog.Error("failed to unmarshal claimed message", "message_id", msg.ID, "error", err)
 			continue
 		}
 
-		for _, msg := range claimed {
-			m, err := mq.unmarshalMessage(msg)
-			if err != nil {
-				slog.Error("failed to unmarshal claimed message", "message_id", msg.ID, "error", err)
-				continue
-			}
-
-			result := handler(ctx, m)
-			if result.Error == "" {
-				if err := mq.opts.Client.XAck(ctx, mq.streamString(), mq.opts.ConsumeOpts.ConsumerGroup, msg.ID).Err(); err != nil {
-					slog.Error("failed to acknowledge claimed message", "message_id", msg.ID, "error", err)
-				} else {
-					atomic.AddUint32(&processed, 1)
-				}
+		result := handler(ctx, m)
+		if result.Error == "" {
+			if err := mq.opts.Client.XAck(ctx, mq.streamString(), mq.opts.ConsumeOpts.ConsumerGroup, msg.ID).Err(); err != nil {
+				slog.Error("failed to acknowledge claimed message", "message_id", msg.ID, "error", err)
 			} else {
-				slog.Error("failed to process claimed message", "message_id", msg.ID, "error", result.Error)
-				// 可以在这里实现重试逻辑
+				atomic.AddUint32(&processed, 1)
 			}
+		} else {
+			slog.Error("failed to process claimed message", "message_id", msg.ID, "error", result.Error)
+			// 可以在这里实现重试逻辑
 		}
 	}
 
