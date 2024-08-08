@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
 	"strings"
 	"sync"
@@ -428,13 +429,14 @@ func (mq *MessageQueue) processNormalMessages(ctx context.Context, handler Messa
 			go func(msg redis.XMessage) {
 				defer wg.Done()
 				defer func() { <-semaphore }() // 释放信号量
-				slog.Debug("processing message", "id", msg.ID, "values", msg.Values)
 
 				m, err := mq.unmarshalMessage(msg)
 				if err != nil {
 					errors <- fmt.Errorf("failed to unmarshal message: %w", err)
 					return
 				}
+
+				slog.Debug("processing message", "msg", m.String())
 
 				ctx := context.Background()
 				if mq.opts.Tracer != nil {
@@ -564,7 +566,9 @@ func (q *MessageQueue) retry(ctx context.Context, msg *Message) error {
 		return err
 	}
 
-	msg.DeliverTimestamp = timestamppb.New(time.Now().Add(time.Duration(msg.RetryCount) * q.opts.ConsumeOpts.RetryTimeWait))
+	msg.DeliverTimestamp = timestamppb.New(
+		time.Now().Add(time.Duration(math.Pow(2, float64(msg.RetryCount))) * q.opts.ConsumeOpts.RetryTimeWait),
+	)
 	err = q.enqueueMessage(ctx, pipe, msg)
 	if err != nil {
 		return err
