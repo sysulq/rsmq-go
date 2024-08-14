@@ -14,17 +14,18 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-func TestProduceAndConsume(t *testing.T) {
+func TestRateLimit(t *testing.T) {
 	cc := redis.NewClient(&redis.Options{
 		Addr: "localhost:6379",
 	})
 
 	queue := rsmq.New(rsmq.Options{
 		Client: cc,
-		Stream: "stream_produce_and_consume",
+		Stream: "rate_limit",
 		ConsumeOpts: rsmq.ConsumeOpts{
 			ConsumerGroup:   "task_group",
 			AutoCreateGroup: true,
+			RateLimit:       3,
 		},
 	})
 	defer queue.Close()
@@ -70,10 +71,16 @@ func TestProduceAndConsume(t *testing.T) {
 		}
 	}()
 
+	now := time.Now()
+
 	resultsList := make([]map[string]interface{}, 0)
 	for i := 0; i < 10; i++ {
 		result := <-results
 		resultsList = append(resultsList, result)
+	}
+
+	if time.Since(now) < 2*time.Second {
+		t.Errorf("Expected to take at least 2 seconds, took %s", time.Since(now))
 	}
 
 	for idx, result := range resultsList {

@@ -7,24 +7,23 @@ import (
 	"log"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/redis/go-redis/v9"
 	"github.com/sysulq/rsmq-go"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-func TestProduceAndConsume(t *testing.T) {
+func TestTagFilter(t *testing.T) {
 	cc := redis.NewClient(&redis.Options{
 		Addr: "localhost:6379",
 	})
 
 	queue := rsmq.New(rsmq.Options{
 		Client: cc,
-		Stream: "stream_produce_and_consume",
+		Stream: "tag_filter",
 		ConsumeOpts: rsmq.ConsumeOpts{
 			ConsumerGroup:   "task_group",
 			AutoCreateGroup: true,
+			SubExpression:   "tagA||tagB",
 		},
 	})
 	defer queue.Close()
@@ -36,8 +35,8 @@ func TestProduceAndConsume(t *testing.T) {
 			task := &rsmq.Message{
 				Payload: json.RawMessage(fmt.Sprintf(`{"message": "Hello %d"}`, i)),
 			}
-			if i%2 == 0 {
-				task.DeliverTimestamp = timestamppb.New(time.Now().Add(time.Second))
+			if i%2 == 1 {
+				task.Tag = "tagA"
 			}
 			err := queue.Enqueue(context.Background(), task)
 			if err != nil {
@@ -71,25 +70,19 @@ func TestProduceAndConsume(t *testing.T) {
 	}()
 
 	resultsList := make([]map[string]interface{}, 0)
-	for i := 0; i < 10; i++ {
+	for i := 0; i < 5; i++ {
 		result := <-results
 		resultsList = append(resultsList, result)
 	}
 
-	for idx, result := range resultsList {
+	for _, result := range resultsList {
 		if !strings.HasPrefix(result["message"].(string), "Hello ") {
 			t.Errorf("Expected result ID to start with 'Hello ', got %s", result)
 		}
 
 		number := result["message"].(string)[6:]
-		if idx < 5 {
-			if number != "1" && number != "3" && number != "5" && number != "7" && number != "9" {
-				t.Errorf("Expected odd number, got %s", number)
-			}
-		} else {
-			if number != "0" && number != "2" && number != "4" && number != "6" && number != "8" {
-				t.Errorf("Expected even number, got %s", number)
-			}
+		if number != "1" && number != "3" && number != "5" && number != "7" && number != "9" {
+			t.Errorf("Expected odd number, got %s", number)
 		}
 	}
 }

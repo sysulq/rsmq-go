@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/bsm/redislock"
+	"github.com/go-redis/redis_rate/v10"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"github.com/robfig/cron/v3"
@@ -37,7 +38,10 @@ type MessageQueue struct {
 	processScript *redis.Script
 	cron          *cron.Cron
 	redisLock     *redislock.Client
+	rateLimit     *redis_rate.Limiter
 	once          sync.Once
+
+	subExpressionMap map[string]struct{}
 }
 
 type Options struct {
@@ -47,8 +51,8 @@ type Options struct {
 	Stream string
 	// MaxLen is the maximum length of the stream
 	MaxLen int64
-	// Trace is the OpenTelemetry tracer
-	Tracer trace.Tracer
+	// TracerProvider is the OpenTelemetry tracer provider
+	TracerProvider trace.TracerProvider
 	// ConsumeOpts represents options for consuming messages
 	ConsumeOpts ConsumeOpts
 }
@@ -60,27 +64,44 @@ type ConsumeOpts struct {
 	// ConsumerID is the unique identifier for the consumer
 	ConsumerID string
 	// BatchSize is the number of messages to consume in a single batch
+	// If set, the consumer will consume messages in batches
 	BatchSize int64
 	// MaxPollInterval is the maximum time to wait between polls
+	// If set, the consumer will wait for the specified duration
 	MaxPollInterval time.Duration
 	// MinPollInterval is the minimum time to wait between polls
+	// If set, the consumer will wait for the specified duration
 	MinPollInterval time.Duration
 	// BlockDuration is the maximum time to block while waiting for messages
+	// If set, the consumer will block for the specified duration
 	BlockDuration time.Duration
 	// AutoCreateGroup determines whether the consumer group should be created automatically
+	// If set, the consumer group will be created if it does not exist
 	AutoCreateGroup bool
 	// MaxConcurrency is the maximum number of messages to process concurrently
+	// If set, the messages will be processed concurrently up to the limit
 	MaxConcurrency uint32
 	// ConsumerIdleTimeout is the maximum time a consumer can be idle before being removed
+	// If set, the idle consumers will be removed periodically
 	ConsumerIdleTimeout time.Duration
 	// MaxRetryLimit is the maximum number of times a message can be retried
+	// If set, the message will be re-queued with an exponential backoff
 	MaxRetryLimit uint32
 	// RetryTimeWait is the time to wait before retrying a message
+	// The time to wait is calculated as 2^retryCount * RetryTimeWait
 	RetryTimeWait time.Duration
 	// PendingTimeout is the time to wait before a pending message is re-queued
+	// If set, the pending messages will be re-queued after the timeout
 	PendingTimeout time.Duration
 	// IdleConsumerCleanInterval is the interval to clean idle consumers
+	// If set, the idle consumers will be removed periodically
 	IdleConsumerCleanInterval time.Duration
+	// RateLimit is the maximum number of messages to consume per second
+	// If set, the rate limiter will be used to limit the number of messages consumed
+	RateLimit int
+	// SubExpression is the sub expression to filter messages, default is "*"
+	// e.g. "tag1||tag2||tag3"
+	SubExpression string
 }
 
 // New creates a new MessageQueue instance
@@ -130,6 +151,9 @@ func New(opts Options) *MessageQueue {
 	if opts.ConsumeOpts.IdleConsumerCleanInterval == 0 {
 		opts.ConsumeOpts.IdleConsumerCleanInterval = 5 * time.Minute
 	}
+	if opts.ConsumeOpts.SubExpression == "" {
+		opts.ConsumeOpts.SubExpression = "*"
+	}
 
 	processScript := redis.NewScript(`
         local delayedSetKey = KEYS[1]
@@ -165,6 +189,39 @@ func New(opts Options) *MessageQueue {
 		cron:          cron.New(),
 		redisLock:     redislock.New(opts.Client),
 	}
+
+	mq.once.Do(func() {
+		// Ensure the stream group specified in the options
+		if opts.ConsumeOpts.ConsumerGroup == "" {
+			return
+		}
+
+		if opts.ConsumeOpts.SubExpression != "*" {
+			mq.subExpressionMap = make(map[string]struct{})
+			tags := strings.Split(opts.ConsumeOpts.SubExpression, "||")
+			for _, tag := range tags {
+				mq.subExpressionMap[tag] = struct{}{}
+			}
+		}
+
+		if opts.ConsumeOpts.AutoCreateGroup {
+			err := mq.ensureConsumerGroup(context.Background(), opts.ConsumeOpts.ConsumerGroup)
+			if err != nil {
+				slog.Error("failed to ensure consumer group", "error", err)
+				return
+			}
+		}
+
+		if opts.ConsumeOpts.RateLimit > 0 {
+			mq.rateLimit = redis_rate.NewLimiter(opts.Client)
+		}
+
+		mq.cron.Schedule(cron.Every(opts.ConsumeOpts.IdleConsumerCleanInterval), cron.FuncJob(func() {
+			_, _ = mq.cleanIdleConsumers(context.Background())
+		}))
+
+		mq.cron.Start()
+	})
 
 	return mq
 }
@@ -219,15 +276,17 @@ func (mq *MessageQueue) Enqueue(ctx context.Context, message *Message) error {
 	message.Stream = mq.streamString()
 
 	if span := trace.SpanFromContext(ctx); span.SpanContext().IsValid() {
-		ctx, span = mq.opts.Tracer.Start(ctx, "Enqueue", trace.WithAttributes(
+		ctx, span = mq.opts.TracerProvider.Tracer("rsmq").Start(ctx, "Enqueue", trace.WithAttributes(
 			attribute.String("message.id", message.Id),
 			attribute.String("stream", mq.opts.Stream),
 		))
 		defer span.End()
-	}
 
-	message.Metadata = make(map[string]string)
-	otel.GetTextMapPropagator().Inject(ctx, propagation.MapCarrier(message.Metadata))
+		if message.Metadata == nil {
+			message.Metadata = make(map[string]string)
+		}
+		otel.GetTextMapPropagator().Inject(ctx, propagation.MapCarrier(message.Metadata))
+	}
 
 	return mq.enqueueMessage(ctx, mq.opts.Client, message)
 }
@@ -238,6 +297,10 @@ func (mq *MessageQueue) streamDelayKeyString() string {
 
 func (mq *MessageQueue) streamString() string {
 	return fmt.Sprintf("rsmq:{%s}", mq.opts.Stream)
+}
+
+func (mq *MessageQueue) streamGroupRateKeyString() string {
+	return fmt.Sprintf("%s:%s:rate", mq.streamString(), mq.opts.ConsumeOpts.ConsumerGroup)
 }
 
 func (mq *MessageQueue) ensureConsumerGroup(ctx context.Context, group string) error {
@@ -263,22 +326,6 @@ func (mq *MessageQueue) Consume(ctx context.Context, handler MessageHandler) err
 	if opts.ConsumerGroup == "" {
 		return fmt.Errorf("consumer group is required")
 	}
-
-	mq.once.Do(func() {
-		if opts.AutoCreateGroup {
-			err := mq.ensureConsumerGroup(context.Background(), opts.ConsumerGroup)
-			if err != nil {
-				slog.ErrorContext(ctx, "failed to ensure consumer group", "error", err)
-				return
-			}
-		}
-
-		mq.cron.Schedule(cron.Every(opts.IdleConsumerCleanInterval), cron.FuncJob(func() {
-			_, _ = mq.cleanIdleConsumers(context.Background())
-		}))
-
-		mq.cron.Start()
-	})
 
 	currentPollInterval := opts.MinPollInterval
 
@@ -387,11 +434,17 @@ func (mq *MessageQueue) consumeStream(ctx context.Context, handler MessageHandle
 }
 
 func (mq *MessageQueue) processNormalMessages(ctx context.Context, handler MessageHandler) (uint32, error) {
+	batchSize := mq.opts.ConsumeOpts.BatchSize
+	// Rate limit the number of messages consumed
+	if mq.rateLimit != nil {
+		batchSize = mq.doRateLimit(ctx, batchSize)
+	}
+
 	streams, err := mq.opts.Client.XReadGroup(ctx, &redis.XReadGroupArgs{
+		Streams:  []string{mq.streamString(), ">"},
 		Group:    mq.opts.ConsumeOpts.ConsumerGroup,
 		Consumer: mq.opts.ConsumeOpts.ConsumerID,
-		Streams:  []string{mq.streamString(), ">"},
-		Count:    mq.opts.ConsumeOpts.BatchSize,
+		Count:    batchSize,
 		Block:    mq.opts.ConsumeOpts.BlockDuration,
 	}).Result()
 	if err != nil {
@@ -459,14 +512,23 @@ func (mq *MessageQueue) processSingleMessage(ctx context.Context, msg redis.XMes
 
 	slog.DebugContext(ctx, "processing message", "msg", m.String())
 
-	if mq.opts.Tracer != nil {
+	if mq.opts.TracerProvider != nil {
 		ctx = otel.GetTextMapPropagator().Extract(ctx, propagation.MapCarrier(m.GetMetadata()))
 		var span trace.Span
-		ctx, span = mq.opts.Tracer.Start(ctx, "ConsumeStream", trace.WithAttributes(
+		ctx, span = mq.opts.TracerProvider.Tracer("rsmq").Start(ctx, "ConsumeStream", trace.WithAttributes(
 			attribute.String("stream", mq.opts.Stream),
 			attribute.String("consumer_group", mq.opts.ConsumeOpts.ConsumerGroup),
 		))
 		defer span.End()
+	}
+
+	if mq.opts.ConsumeOpts.SubExpression != "*" {
+		if _, ok := mq.subExpressionMap[m.GetTag()]; !ok {
+			// filter out messages that don't match the sub expression
+			if err := mq.opts.Client.XAck(ctx, mq.streamString(), mq.opts.ConsumeOpts.ConsumerGroup, msg.ID).Err(); err != nil {
+				return fmt.Errorf("failed to acknowledge message %s: %w", msg.ID, err)
+			}
+		}
 	}
 
 	result := handler(ctx, m)
@@ -477,21 +539,21 @@ func (mq *MessageQueue) processSingleMessage(ctx context.Context, msg redis.XMes
 			return fmt.Errorf("failed to acknowledge message %s: %w", msg.ID, err)
 		}
 	} else {
-		msg := proto.Clone(m).(*Message)
+		message := proto.Clone(m).(*Message)
 		// Message processing failed, implement retry logic
-		if atomic.AddUint32(&msg.RetryCount, 1) <= mq.opts.ConsumeOpts.MaxRetryLimit {
+		if atomic.AddUint32(&message.RetryCount, 1) <= mq.opts.ConsumeOpts.MaxRetryLimit {
 			// Re-enqueue the message with updated retry count
-			if err := mq.retry(ctx, msg); err != nil {
+			if err := mq.retry(ctx, message); err != nil {
 				return fmt.Errorf("failed to re-enqueue message: %w", err)
 			}
-			slog.InfoContext(ctx, "message requeued for retry", "retry_count", msg.RetryCount)
+			slog.InfoContext(ctx, "message requeued for retry", "retry_count", message.RetryCount)
 		} else {
 			// Max retries reached, handle accordingly (e.g., move to dead letter queue)
 			slog.WarnContext(ctx, "message reached max retry limit", "error", result.Error)
 			// Here you might want to implement dead letter queue logic
 		}
 		// Acknowledge the message to remove it from the pending list
-		if err := mq.opts.Client.XAck(ctx, mq.streamString(), mq.opts.ConsumeOpts.ConsumerGroup, msg.GetId()).Err(); err != nil {
+		if err := mq.opts.Client.XAck(ctx, mq.streamString(), mq.opts.ConsumeOpts.ConsumerGroup, message.GetId()).Err(); err != nil {
 			return fmt.Errorf("failed to acknowledge failed message: %w", err)
 		}
 	}
@@ -524,7 +586,7 @@ func generateConsumerID() string {
 	if err != nil {
 		hostname = "unknown-host"
 	}
-	return fmt.Sprintf("%s-%s", hostname, uuid.New().String())
+	return fmt.Sprintf("%s-%d", hostname, os.Getpid())
 }
 
 func (mq *MessageQueue) cleanIdleConsumers(ctx context.Context) (int, error) {
@@ -619,4 +681,21 @@ func (mq *MessageQueue) processPendingMessages(ctx context.Context, handler Mess
 	}
 
 	return processed, nil
+}
+
+func (mq *MessageQueue) doRateLimit(ctx context.Context, n int64) int64 {
+	for {
+		result, err := mq.rateLimit.AllowAtMost(ctx,
+			mq.streamGroupRateKeyString(), redis_rate.PerSecond(mq.opts.ConsumeOpts.RateLimit), int(n))
+		if err != nil {
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+
+		if result.Allowed > 0 {
+			return int64(result.Allowed)
+		}
+
+		time.Sleep(result.RetryAfter)
+	}
 }

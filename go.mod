@@ -4,6 +4,7 @@ go 1.22.4
 
 require (
 	github.com/bsm/redislock v0.9.4
+	github.com/go-redis/redis_rate/v10 v10.0.1
 	github.com/google/uuid v1.6.0
 	github.com/redis/go-redis/v9 v9.6.1
 	github.com/robfig/cron/v3 v3.0.1
