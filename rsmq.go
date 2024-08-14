@@ -2,6 +2,7 @@ package rsmq
 
 import (
 	"context"
+	_ "embed"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -36,13 +37,13 @@ type MessageHandler func(context.Context, *Message) error
 
 // MessageQueue manages message production and consumption
 type MessageQueue struct {
-	opts          Options
-	closed        *atomic.Uint32
-	processScript *redis.Script
-	cron          *cron.Cron
-	redisLock     *redislock.Client
-	rateLimit     *redis_rate.Limiter
-	once          sync.Once
+	opts        Options
+	closed      *atomic.Uint32
+	delayScript *redis.Script
+	cron        *cron.Cron
+	redisLock   *redislock.Client
+	rateLimit   *redis_rate.Limiter
+	once        sync.Once
 
 	subExpressionMap map[string]struct{}
 }
@@ -112,6 +113,9 @@ type ConsumeOpts struct {
 	SubExpression string
 }
 
+//go:embed delay.lua
+var delayScript string
+
 // New creates a new MessageQueue instance
 func New(opts Options) *MessageQueue {
 	if opts.Client == nil {
@@ -144,39 +148,12 @@ func New(opts Options) *MessageQueue {
 		panic(fmt.Sprintf("failed to merge options: %v", err))
 	}
 
-	processScript := redis.NewScript(`
-        local delayedSetKey = KEYS[1]
-        local streamKey = KEYS[2]
-        local now = tonumber(ARGV[1])
-
-        -- Get messages that are ready to be processed
-        local messages = redis.call('ZRANGEBYSCORE', delayedSetKey, 0, now)
-
-		local processed = 0
-        if #messages > 0 then
-            for i = 1, #messages do
-                local messageData = messages[i]
-                local score = messages[i+1]
-                
-                -- Add message to the stream
-                redis.call('XADD', streamKey, '*', 'message', messageData)
-                
-                -- Remove the processed message from the delayed set
-                redis.call('ZREM', delayedSetKey, messageData)
-                
-                processed = processed + 1
-            end
-        end
-
-        return processed
-    `)
-
 	mq := &MessageQueue{
-		opts:          opts,
-		processScript: processScript,
-		closed:        &atomic.Uint32{},
-		cron:          cron.New(),
-		redisLock:     redislock.New(opts.Client),
+		opts:        opts,
+		delayScript: redis.NewScript(delayScript),
+		closed:      &atomic.Uint32{},
+		cron:        cron.New(),
+		redisLock:   redislock.New(opts.Client),
 	}
 
 	mq.once.Do(func() {
@@ -398,7 +375,7 @@ func (mq *MessageQueue) Close() error {
 func (mq *MessageQueue) processDelayedMessages(ctx context.Context) (int, error) {
 	now := time.Now().Unix()
 
-	result, err := mq.processScript.Run(ctx, mq.opts.Client, []string{mq.streamDelayKeyString(), mq.streamString()}, now).Int()
+	result, err := mq.delayScript.Run(ctx, mq.opts.Client, []string{mq.streamDelayKeyString(), mq.streamString()}, now).Int()
 	if err != nil {
 		return 0, fmt.Errorf("failed to process delayed messages: %w", err)
 	}
