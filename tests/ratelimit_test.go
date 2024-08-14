@@ -21,7 +21,7 @@ func TestRateLimit(t *testing.T) {
 
 	queue := rsmq.New(rsmq.Options{
 		Client: cc,
-		Stream: "rate_limit",
+		Topic:  "rate_limit",
 		ConsumeOpts: rsmq.ConsumeOpts{
 			ConsumerGroup:   "task_group",
 			AutoCreateGroup: true,

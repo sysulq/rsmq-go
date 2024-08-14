@@ -21,7 +21,7 @@ func TestPending(t *testing.T) {
 
 	queuePending := rsmq.New(rsmq.Options{
 		Client: cc,
-		Stream: "pending",
+		Topic:  "pending",
 		ConsumeOpts: rsmq.ConsumeOpts{
 			ConsumerGroup:   "task_group",
 			ConsumerID:      "pending",
@@ -51,7 +51,7 @@ func TestPending(t *testing.T) {
 
 	queue := rsmq.New(rsmq.Options{
 		Client: cc,
-		Stream: "pending",
+		Topic:  "pending",
 		ConsumeOpts: rsmq.ConsumeOpts{
 			ConsumerGroup:   "task_group",
 			ConsumerID:      "normal",

@@ -23,7 +23,7 @@ func TestTagFilter(t *testing.T) {
 
 	queue := rsmq.New(rsmq.Options{
 		Client: cc,
-		Stream: "tag_filter",
+		Topic:  "tag_filter",
 		ConsumeOpts: rsmq.ConsumeOpts{
 			ConsumerGroup:   "task_group",
 			AutoCreateGroup: true,

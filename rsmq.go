@@ -51,9 +51,9 @@ type Options struct {
 	// Client is the Redis client
 	// Must be set
 	Client redis.Cmdable
-	// Stream is the key of the stream
+	// Topic is the topic name of the message
 	// Must be set
-	Stream string
+	Topic string
 	// MaxLen is the maximum length of the stream
 	// Default is 1000
 	MaxLen int64
@@ -118,8 +118,8 @@ func New(opts Options) *MessageQueue {
 		panic("redis client is required")
 	}
 
-	if opts.Stream == "" {
-		panic("stream key is required")
+	if opts.Topic == "" {
+		panic("topic is required")
 	}
 
 	defaultOpts := Options{
@@ -260,12 +260,12 @@ func (mq *MessageQueue) Add(ctx context.Context, message *Message) error {
 		message.DeliverTimestamp = message.GetBornTimestamp()
 	}
 
-	message.Stream = mq.streamString()
+	message.Topic = mq.opts.Topic
 
 	if span := trace.SpanFromContext(ctx); span.SpanContext().IsValid() {
 		ctx, span = mq.opts.TracerProvider.Tracer("rsmq").Start(ctx, "Enqueue", trace.WithAttributes(
 			attribute.String("message.id", message.Id),
-			attribute.String("stream", mq.opts.Stream),
+			attribute.String("topic", mq.opts.Topic),
 		))
 		defer span.End()
 
@@ -282,8 +282,12 @@ func (mq *MessageQueue) streamDelayKeyString() string {
 	return fmt.Sprintf("%s:delayed", mq.streamString())
 }
 
+func (mq *MessageQueue) streamLockKeyString() string {
+	return fmt.Sprintf("%s:lock", mq.streamString())
+}
+
 func (mq *MessageQueue) streamString() string {
-	return fmt.Sprintf("rsmq:{%s}", mq.opts.Stream)
+	return fmt.Sprintf("rsmq:{%s}", mq.opts.Topic)
 }
 
 func (mq *MessageQueue) streamGroupRateKeyString() string {
@@ -503,7 +507,7 @@ func (mq *MessageQueue) processSingleMessage(ctx context.Context, msg redis.XMes
 		ctx = otel.GetTextMapPropagator().Extract(ctx, propagation.MapCarrier(m.GetMetadata()))
 		var span trace.Span
 		ctx, span = mq.opts.TracerProvider.Tracer("rsmq").Start(ctx, "ConsumeStream", trace.WithAttributes(
-			attribute.String("stream", mq.opts.Stream),
+			attribute.String("topic", mq.opts.Topic),
 			attribute.String("consumer_group", mq.opts.ConsumeOpts.ConsumerGroup),
 		))
 		defer span.End()
@@ -579,7 +583,7 @@ func generateConsumerID() string {
 }
 
 func (mq *MessageQueue) cleanIdleConsumers(ctx context.Context) (int, error) {
-	lock, err := mq.redisLock.Obtain(ctx, "rsmq:lock:"+mq.opts.Stream, 3*time.Second, &redislock.Options{})
+	lock, err := mq.redisLock.Obtain(ctx, mq.streamLockKeyString(), 3*time.Second, &redislock.Options{})
 	if err != nil && err != redislock.ErrNotObtained {
 		slog.ErrorContext(ctx, "failed to obtain lock", "error", err)
 		return 0, err

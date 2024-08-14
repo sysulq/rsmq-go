@@ -34,7 +34,7 @@ func TestOtel(t *testing.T) {
 
 	queue := rsmq.New(rsmq.Options{
 		Client:         cc,
-		Stream:         "otel",
+		Topic:          "otel",
 		TracerProvider: tp,
 		ConsumeOpts: rsmq.ConsumeOpts{
 			ConsumerGroup:   "task_group",

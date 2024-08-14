@@ -10,8 +10,8 @@ message Message {
   string id = 1;
   // The payload of the message.
   bytes payload = 2;
-  // The stream of the message.
-  string stream = 3;
+  // The topic of the message.
+  string topic = 3;
   // The tag of the message.
   string tag = 4;
   // The metadata of the message.

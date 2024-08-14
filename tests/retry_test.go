@@ -22,7 +22,7 @@ func TestRetry(t *testing.T) {
 
 	queue := rsmq.New(rsmq.Options{
 		Client: cc,
-		Stream: "retry",
+		Topic:  "retry",
 		ConsumeOpts: rsmq.ConsumeOpts{
 			ConsumerGroup:   "task_group",
 			AutoCreateGroup: true,

@@ -16,7 +16,7 @@ func TestCleanIdleConsumer(t *testing.T) {
 
 	queue := New(Options{
 		Client: cc,
-		Stream: "clean_idle_consumer",
+		Topic:  "clean_idle_consumer",
 		ConsumeOpts: ConsumeOpts{
 			ConsumerGroup:   "task_group",
 			AutoCreateGroup: true,
