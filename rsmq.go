@@ -46,10 +46,13 @@ type MessageQueue struct {
 
 type Options struct {
 	// Client is the Redis client
-	Client *redis.Client
+	// Must be set
+	Client redis.Cmdable
 	// Stream is the key of the stream
+	// Must be set
 	Stream string
 	// MaxLen is the maximum length of the stream
+	// Default is 1000
 	MaxLen int64
 	// TracerProvider is the OpenTelemetry tracer provider
 	TracerProvider trace.TracerProvider
@@ -60,8 +63,10 @@ type Options struct {
 // ConsumeOpts represents options for consuming messages
 type ConsumeOpts struct {
 	// ConsumerGroup is the name of the consumer group
+	// Must be set if consuming messages
 	ConsumerGroup string
 	// ConsumerID is the unique identifier for the consumer
+	// Default is generated based on hostname and process ID
 	ConsumerID string
 	// BatchSize is the number of messages to consume in a single batch
 	// If set, the consumer will consume messages in batches
