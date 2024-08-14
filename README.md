@@ -13,9 +13,10 @@ Features
 - Auto-acknowledgment of message
 - Message delivery delay with specific timestamp
 - Message retry ability
+- Dead letter queue after retry limit
 - Auto clean idle consumer
 - Pending message processing
-- Rate limiting
+- Distributed rate limiting
 - Tag filter for message
 - OpenTelemetry instrumentation
 
