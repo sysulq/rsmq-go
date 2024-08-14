@@ -4,13 +4,16 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 	"math"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"dario.cat/mergo"
 	"github.com/bsm/redislock"
 	"github.com/go-redis/redis_rate/v10"
 	"github.com/google/uuid"
@@ -119,45 +122,26 @@ func New(opts Options) *MessageQueue {
 		panic("stream key is required")
 	}
 
-	if opts.MaxLen == 0 {
-		opts.MaxLen = 1000
+	defaultOpts := Options{
+		MaxLen: 1000,
+		ConsumeOpts: ConsumeOpts{
+			BatchSize:                 100,
+			MaxPollInterval:           time.Second,
+			MinPollInterval:           10 * time.Millisecond,
+			BlockDuration:             100 * time.Millisecond,
+			MaxConcurrency:            100,
+			ConsumerID:                generateConsumerID(),
+			ConsumerIdleTimeout:       2 * time.Hour,
+			MaxRetryLimit:             3,
+			RetryTimeWait:             5 * time.Second,
+			PendingTimeout:            time.Minute,
+			IdleConsumerCleanInterval: 5 * time.Minute,
+			SubExpression:             "*",
+		},
 	}
 
-	if opts.ConsumeOpts.BatchSize == 0 {
-		opts.ConsumeOpts.BatchSize = 100
-	}
-	if opts.ConsumeOpts.MaxPollInterval == 0 {
-		opts.ConsumeOpts.MaxPollInterval = time.Second
-	}
-	if opts.ConsumeOpts.MinPollInterval == 0 {
-		opts.ConsumeOpts.MinPollInterval = time.Millisecond * 10
-	}
-	if opts.ConsumeOpts.BlockDuration == 0 {
-		opts.ConsumeOpts.BlockDuration = time.Millisecond * 100 // Default block duration
-	}
-	if opts.ConsumeOpts.MaxConcurrency == 0 {
-		opts.ConsumeOpts.MaxConcurrency = 100
-	}
-	if opts.ConsumeOpts.ConsumerID == "" {
-		opts.ConsumeOpts.ConsumerID = generateConsumerID()
-	}
-	if opts.ConsumeOpts.ConsumerIdleTimeout == 0 {
-		opts.ConsumeOpts.ConsumerIdleTimeout = 2 * time.Hour
-	}
-	if opts.ConsumeOpts.MaxRetryLimit == 0 {
-		opts.ConsumeOpts.MaxRetryLimit = 3
-	}
-	if opts.ConsumeOpts.RetryTimeWait == 0 {
-		opts.ConsumeOpts.RetryTimeWait = 5 * time.Second
-	}
-	if opts.ConsumeOpts.PendingTimeout == 0 {
-		opts.ConsumeOpts.PendingTimeout = time.Minute
-	}
-	if opts.ConsumeOpts.IdleConsumerCleanInterval == 0 {
-		opts.ConsumeOpts.IdleConsumerCleanInterval = 5 * time.Minute
-	}
-	if opts.ConsumeOpts.SubExpression == "" {
-		opts.ConsumeOpts.SubExpression = "*"
+	if err := mergo.Merge(&opts, defaultOpts); err != nil {
+		panic(fmt.Sprintf("failed to merge options: %v", err))
 	}
 
 	processScript := redis.NewScript(`
@@ -202,11 +186,9 @@ func New(opts Options) *MessageQueue {
 		}
 
 		if opts.ConsumeOpts.SubExpression != "*" {
-			mq.subExpressionMap = make(map[string]struct{})
-			tags := strings.Split(opts.ConsumeOpts.SubExpression, "||")
-			for _, tag := range tags {
-				mq.subExpressionMap[tag] = struct{}{}
-			}
+			mq.subExpressionMap = maps.Collect(Map2(func(k int, v string) (string, struct{}) {
+				return v, struct{}{}
+			}, slices.All(strings.Split(opts.ConsumeOpts.SubExpression, "||"))))
 		}
 
 		if opts.ConsumeOpts.AutoCreateGroup {
