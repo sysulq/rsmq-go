@@ -3,6 +3,20 @@ rsmq-go
 
 Go implementation of the Message Queue based on Redis Streams.
 
+Features
+---
+
+- Add message to the queue
+- Consume message from the queue
+- Auto-acknowledgment of message
+- Message delivery delay with specific timestamp
+- Message retry ability
+- Auto clean idle consumer
+- Pending message processing
+- Rate limiting
+- Tag filter for message
+- OpenTelemetry instrumentation
+
 Installation
 ---
 
@@ -52,9 +66,9 @@ func TestProduceAndConsume(t *testing.T) {
 		if i%2 == 0 {
 			task.DeliverTimestamp = timestamppb.New(time.Now().Add(time.Second))
 		}
-		err := queue.Enqueue(context.Background(), task)
+		err := queue.Add(context.Background(), task)
 		if err != nil {
-			log.Printf("Failed to enqueue task: %v", err)
+			log.Printf("Failed to add task: %v", err)
 		}
 	}
 

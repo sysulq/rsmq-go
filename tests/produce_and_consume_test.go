@@ -39,7 +39,7 @@ func TestProduceAndConsume(t *testing.T) {
 			if i%2 == 0 {
 				task.DeliverTimestamp = timestamppb.New(time.Now().Add(time.Second))
 			}
-			err := queue.Enqueue(context.Background(), task)
+			err := queue.Add(context.Background(), task)
 			if err != nil {
 				log.Printf("Failed to enqueue task: %v", err)
 			}

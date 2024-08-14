@@ -43,7 +43,7 @@ func TestPending(t *testing.T) {
 		Payload: json.RawMessage(`{"message": "Hello world"}`),
 	}
 	for i := 0; i < 4; i++ {
-		err := queuePending.Enqueue(context.Background(), task)
+		err := queuePending.Add(context.Background(), task)
 		if err != nil {
 			log.Printf("Failed to enqueue task: %v", err)
 		}

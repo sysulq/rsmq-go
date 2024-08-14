@@ -37,7 +37,7 @@ func TestRetry(t *testing.T) {
 		Payload: json.RawMessage(`{"message": "Hello world"}`),
 	}
 
-	err := queue.Enqueue(context.Background(), task)
+	err := queue.Add(context.Background(), task)
 	if err != nil {
 		log.Printf("Failed to enqueue task: %v", err)
 	}

@@ -5,10 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/stretchr/testify/require"
 	"github.com/sysulq/rsmq-go"
 )
 
@@ -38,7 +42,7 @@ func TestTagFilter(t *testing.T) {
 			if i%2 == 1 {
 				task.Tag = "tagA"
 			}
-			err := queue.Enqueue(context.Background(), task)
+			err := queue.Add(context.Background(), task)
 			if err != nil {
 				log.Printf("Failed to enqueue task: %v", err)
 			}
@@ -49,7 +53,7 @@ func TestTagFilter(t *testing.T) {
 
 	<-waitProducer
 
-	results := make(chan map[string]interface{})
+	var counts uint32
 	// Consume tasks
 	go func() {
 		err := queue.Consume(
@@ -59,7 +63,19 @@ func TestTagFilter(t *testing.T) {
 				_ = json.Unmarshal(task.Payload, &payload)
 				fmt.Printf("Processing task: %s, payload: %v\n", task.Id, payload)
 
-				results <- payload
+				if !strings.HasPrefix(payload["message"].(string), "Hello ") {
+					t.Errorf("Expected result ID to start with 'Hello ', got %s", payload)
+				}
+
+				number := payload["message"].(string)[6:]
+				if number != "1" && number != "3" && number != "5" && number != "7" && number != "9" {
+					t.Errorf("Expected odd number, got %s", number)
+				}
+
+				n, err := strconv.Atoi(number)
+				require.Nil(t, err)
+
+				atomic.AddUint32(&counts, uint32(n))
 
 				return nil
 			},
@@ -69,20 +85,8 @@ func TestTagFilter(t *testing.T) {
 		}
 	}()
 
-	resultsList := make([]map[string]interface{}, 0)
-	for i := 0; i < 5; i++ {
-		result := <-results
-		resultsList = append(resultsList, result)
-	}
-
-	for _, result := range resultsList {
-		if !strings.HasPrefix(result["message"].(string), "Hello ") {
-			t.Errorf("Expected result ID to start with 'Hello ', got %s", result)
-		}
-
-		number := result["message"].(string)[6:]
-		if number != "1" && number != "3" && number != "5" && number != "7" && number != "9" {
-			t.Errorf("Expected odd number, got %s", number)
-		}
+	time.Sleep(time.Second)
+	if atomic.LoadUint32(&counts) != 25 {
+		t.Errorf("Expected sum of odd numbers to be 25, got %d", atomic.LoadUint32(&counts))
 	}
 }

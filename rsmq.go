@@ -261,8 +261,8 @@ func (mq *MessageQueue) enqueueMessage(ctx context.Context, pipe redis.Cmdable, 
 	return nil
 }
 
-// Enqueue adds a new message to the queue
-func (mq *MessageQueue) Enqueue(ctx context.Context, message *Message) error {
+// Add adds a new message to the queue
+func (mq *MessageQueue) Add(ctx context.Context, message *Message) error {
 	if message.GetId() == "" {
 		message.Id = uuid.New().String()
 	}
@@ -528,6 +528,8 @@ func (mq *MessageQueue) processSingleMessage(ctx context.Context, msg redis.XMes
 			if err := mq.opts.Client.XAck(ctx, mq.streamString(), mq.opts.ConsumeOpts.ConsumerGroup, msg.ID).Err(); err != nil {
 				return fmt.Errorf("failed to acknowledge message %s: %w", msg.ID, err)
 			}
+
+			return nil
 		}
 	}
 

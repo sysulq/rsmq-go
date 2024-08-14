@@ -50,7 +50,7 @@ func TestOtel(t *testing.T) {
 	ctx, span := tp.Tracer("rsmq").Start(context.Background(), "otel")
 	defer span.End()
 
-	err := queue.Enqueue(ctx, task)
+	err := queue.Add(ctx, task)
 	require.Nil(t, err)
 
 	consumeDone := make(chan struct{})
