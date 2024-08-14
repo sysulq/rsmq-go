@@ -22,7 +22,7 @@ func main() {
 
 	queue := rsmq.New(rsmq.Options{
 		Client: cc,
-		Stream: "stream_produce_and_consume",
+		Topic:  "stream_produce_and_consume",
 		ConsumeOpts: rsmq.ConsumeOpts{
 			ConsumerGroup:   "task_group",
 			AutoCreateGroup: true,

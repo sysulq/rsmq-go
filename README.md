@@ -52,7 +52,7 @@ func TestProduceAndConsume(t *testing.T) {
 
 	queue := rsmq.New(rsmq.Options{
 		Client: cc,
-		Stream: "example",
+		Topic: "example",
 		ConsumeOpts: rsmq.ConsumeOpts{
 			ConsumerGroup:   "task_group",
 			AutoCreateGroup: true,
