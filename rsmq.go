@@ -282,6 +282,10 @@ func (mq *MessageQueue) streamDelayKeyString() string {
 	return fmt.Sprintf("%s:delayed", mq.streamString())
 }
 
+func (mq *MessageQueue) streamDlqKeyString() string {
+	return fmt.Sprintf("%s:dlq", mq.streamString())
+}
+
 func (mq *MessageQueue) streamLockKeyString() string {
 	return fmt.Sprintf("%s:lock", mq.streamString())
 }
@@ -536,18 +540,12 @@ func (mq *MessageQueue) processSingleMessage(ctx context.Context, msg redis.XMes
 		// Message processing failed, implement retry logic
 		if atomic.AddUint32(&message.RetryCount, 1) <= mq.opts.ConsumeOpts.MaxRetryLimit {
 			// Re-enqueue the message with updated retry count
-			if err := mq.retry(ctx, message); err != nil {
-				return fmt.Errorf("failed to re-enqueue message: %w", err)
-			}
-			slog.InfoContext(ctx, "message requeued for retry", "retry_count", message.RetryCount)
+			return mq.retry(ctx, message)
 		} else {
 			// Max retries reached, handle accordingly (e.g., move to dead letter queue)
 			slog.WarnContext(ctx, "message reached max retry limit", "error", result.Error)
 			// Here you might want to implement dead letter queue logic
-		}
-		// Acknowledge the message to remove it from the pending list
-		if err := mq.opts.Client.XAck(ctx, mq.streamString(), mq.opts.ConsumeOpts.ConsumerGroup, message.GetId()).Err(); err != nil {
-			return fmt.Errorf("failed to acknowledge failed message: %w", err)
+			return mq.send2dlq(ctx, message)
 		}
 	}
 
@@ -634,6 +632,45 @@ func (q *MessageQueue) retry(ctx context.Context, msg *Message) error {
 	if err != nil {
 		return err
 	}
+
+	_, err = pipe.Exec(ctx)
+	return err
+}
+
+func (mq *MessageQueue) send2dlq(ctx context.Context, msg *Message) error {
+	// Make the delete and re-queue operation atomic in case we crash midway
+	// and lose a message.
+	pipe := mq.opts.Client.TxPipeline()
+	// When retry a msg, ack it before we delete msg.
+	if err := pipe.XAck(ctx, mq.streamString(), mq.opts.ConsumeOpts.ConsumerGroup, msg.GetId()).Err(); err != nil {
+		return err
+	}
+
+	err := pipe.XDel(ctx, mq.streamString(), msg.GetId()).Err()
+	if err != nil {
+		return err
+	}
+
+	// Set the origin message id if it's not set
+	if msg.OriginMsgId == "" {
+		msg.OriginMsgId = msg.Id
+	}
+
+	messageBytes, err := proto.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal message: %w", err)
+	}
+
+	// Add to dlq stream
+	err = pipe.XAdd(ctx, &redis.XAddArgs{
+		Stream: mq.streamDlqKeyString(),
+		Values: map[string]interface{}{"message": string(messageBytes)},
+	}).Err()
+	if err != nil {
+		return fmt.Errorf("failed to add message to dlq stream: %w", err)
+	}
+
+	slog.DebugContext(ctx, "added message to dlq stream", "id", msg.Id)
 
 	_, err = pipe.Exec(ctx)
 	return err

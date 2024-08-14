@@ -30,6 +30,10 @@ func TestRetry(t *testing.T) {
 		},
 	})
 	defer queue.Close()
+	defer func() {
+		_, err := cc.Del(context.Background(), "rsmq:{retry}:dlq").Result()
+		require.NoError(t, err)
+	}()
 
 	// Produce tasks
 
@@ -80,4 +84,8 @@ func TestRetry(t *testing.T) {
 		require.Equal(t, originMsgId, payloads[i].GetOriginMsgId())
 		require.EqualValues(t, i, payloads[i].GetRetryCount())
 	}
+
+	len, err := cc.XLen(context.Background(), "rsmq:{retry}:dlq").Result()
+	require.NoError(t, err)
+	require.Equal(t, int64(1), len)
 }
