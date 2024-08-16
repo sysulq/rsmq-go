@@ -5,15 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"testing"
 	"time"
 
 	"github.com/redis/go-redis/v9"
 	"github.com/sysulq/rsmq-go"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-func TestProduceAndConsume(t *testing.T) {
+func Example_produceAndConsume() {
 	cc := redis.NewClient(&redis.Options{
 		Addr: "localhost:6379",
 	})
@@ -24,6 +22,7 @@ func TestProduceAndConsume(t *testing.T) {
 		ConsumeOpts: rsmq.ConsumeOpts{
 			ConsumerGroup:   "task_group",
 			AutoCreateGroup: true,
+			MaxConcurrency:  1,
 		},
 	})
 	defer queue.Close()
@@ -33,9 +32,7 @@ func TestProduceAndConsume(t *testing.T) {
 		task := &rsmq.Message{
 			Payload: json.RawMessage(fmt.Sprintf(`{"message": "Hello %d"}`, i)),
 		}
-		if i%2 == 0 {
-			task.DeliverTimestamp = timestamppb.New(time.Now().Add(time.Second))
-		}
+
 		err := queue.Add(context.Background(), task)
 		if err != nil {
 			log.Printf("Failed to enqueue task: %v", err)
@@ -49,7 +46,7 @@ func TestProduceAndConsume(t *testing.T) {
 			func(ctx context.Context, task *rsmq.Message) error {
 				var payload map[string]interface{}
 				_ = json.Unmarshal(task.Payload, &payload)
-				fmt.Printf("Processing task: %s, payload: %v\n", task.Id, payload)
+				fmt.Printf("Processing task, payload: %v\n", payload)
 
 				return nil
 			},
@@ -61,14 +58,14 @@ func TestProduceAndConsume(t *testing.T) {
 
 	time.Sleep(time.Second)
 	// Output:
-	// Processing task: 1723447963244-0, payload: map[message:Hello 1]
-	// Processing task: 1723447963246-1, payload: map[message:Hello 9]
-	// Processing task: 1723447963245-1, payload: map[message:Hello 5]
-	// Processing task: 1723447963246-0, payload: map[message:Hello 7]
-	// Processing task: 1723447963245-0, payload: map[message:Hello 3]
-	// Processing task: 1723447964249-1, payload: map[message:Hello 2]
-	// Processing task: 1723447964249-0, payload: map[message:Hello 4]
-	// Processing task: 1723447964249-4, payload: map[message:Hello 0]
-	// Processing task: 1723447964249-2, payload: map[message:Hello 8]
-	// Processing task: 1723447964249-3, payload: map[message:Hello 6]
+	// Processing task, payload: map[message:Hello 0]
+	// Processing task, payload: map[message:Hello 1]
+	// Processing task, payload: map[message:Hello 2]
+	// Processing task, payload: map[message:Hello 3]
+	// Processing task, payload: map[message:Hello 4]
+	// Processing task, payload: map[message:Hello 5]
+	// Processing task, payload: map[message:Hello 6]
+	// Processing task, payload: map[message:Hello 7]
+	// Processing task, payload: map[message:Hello 8]
+	// Processing task, payload: map[message:Hello 9]
 }

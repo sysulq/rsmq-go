@@ -681,7 +681,6 @@ func (mq *MessageQueue) processPendingMessages(ctx context.Context, handler Mess
 	for _, msg := range claimed {
 		err := mq.processSingleMessage(ctx, msg, handler)
 		if err != nil {
-			slog.ErrorContext(ctx, "failed to process pending message", "error", err)
 			continue
 		}
 		processed++
@@ -695,6 +694,7 @@ func (mq *MessageQueue) doRateLimit(ctx context.Context, n int64) int64 {
 		result, err := mq.rateLimit.AllowAtMost(ctx,
 			mq.streamGroupRateKeyString(), redis_rate.PerSecond(mq.opts.ConsumeOpts.RateLimit), int(n))
 		if err != nil {
+			slog.ErrorContext(ctx, "failed to rate limit", "error", err)
 			time.Sleep(100 * time.Millisecond)
 			continue
 		}
