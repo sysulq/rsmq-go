@@ -2,6 +2,7 @@ rsmq-go
 ===
 
 [![Go](https://github.com/sysulq/rsmq-go/actions/workflows/go.yml/badge.svg)](https://github.com/sysulq/rsmq-go/actions/workflows/go.yml)
+[![codecov](https://codecov.io/github/sysulq/rsmq-go/graph/badge.svg?token=A6FCMXFVTB)](https://codecov.io/github/sysulq/rsmq-go)
 
 Go implementation of the Message Queue based on Redis Streams.
 
