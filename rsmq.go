@@ -25,6 +25,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
+	"golang.org/x/sync/errgroup"
 	"google.golang.org/protobuf/proto"
 	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -34,6 +35,36 @@ type Message = rsmqv1.Message
 
 // MessageHandler is a function that processes a message and returns a result
 type MessageHandler func(context.Context, *Message) error
+
+// BatchMessageHandler is a function that processes a batch of messages and returns a list of errors
+type BatchMessageHandler func(context.Context, []*Message) []error
+
+// Serial is a message handler that processes messages serially
+func Serial(handler MessageHandler) BatchMessageHandler {
+	return func(ctx context.Context, messages []*Message) []error {
+		errors := make([]error, len(messages))
+		for i, msg := range messages {
+			errors[i] = handler(ctx, msg)
+		}
+		return errors
+	}
+}
+
+// Parallel is a message handler that processes messages concurrently
+func Parallel(handler MessageHandler) BatchMessageHandler {
+	return func(ctx context.Context, messages []*Message) []error {
+		eg, ctx := errgroup.WithContext(ctx)
+		errors := make([]error, len(messages))
+		for i, msg := range messages {
+			eg.Go(func() error {
+				errors[i] = handler(ctx, msg)
+				return errors[i]
+			})
+		}
+		_ = eg.Wait()
+		return errors
+	}
+}
 
 // MessageQueue manages message production and consumption
 type MessageQueue struct {
@@ -322,7 +353,7 @@ func (mq *MessageQueue) ensureConsumerGroup(ctx context.Context, group string) e
 }
 
 // Consume starts consuming messages from the queue
-func (mq *MessageQueue) Consume(ctx context.Context, handler MessageHandler) error {
+func (mq *MessageQueue) Consume(ctx context.Context, handler BatchMessageHandler) error {
 	opts := mq.opts.ConsumeOpts
 
 	if opts.ConsumerGroup == "" {
@@ -413,19 +444,19 @@ func (mq *MessageQueue) processDelayedMessages(ctx context.Context) (int, error)
 	return result, nil
 }
 
-func (mq *MessageQueue) consumeStream(ctx context.Context, handler MessageHandler) (uint32, error) {
+func (mq *MessageQueue) consumeStream(ctx context.Context, handler BatchMessageHandler) (uint32, error) {
 	var processed uint32
 
-	// 首先处理正常的消息流
-	normalProcessed, err := mq.processNormalMessages(ctx, handler)
+	// Process normal messages
+	normalProcessed, err := mq.processMessages(ctx, handler, false)
 	if err != nil {
 		return processed, err
 	}
 	processed += normalProcessed
 
-	// 如果没有新的正常消息，尝试处理pending消息
+	// If no new normal messages, try to process pending messages
 	if normalProcessed == 0 {
-		pendingProcessed, err := mq.processPendingMessages(ctx, handler)
+		pendingProcessed, err := mq.processMessages(ctx, handler, true)
 		if err != nil {
 			slog.ErrorContext(ctx, "failed to process pending messages", "error", err)
 		}
@@ -435,128 +466,139 @@ func (mq *MessageQueue) consumeStream(ctx context.Context, handler MessageHandle
 	return processed, nil
 }
 
-func (mq *MessageQueue) processNormalMessages(ctx context.Context, handler MessageHandler) (uint32, error) {
+func (mq *MessageQueue) processMessages(ctx context.Context, handler BatchMessageHandler, isPending bool) (uint32, error) {
 	batchSize := mq.opts.ConsumeOpts.BatchSize
-	// Rate limit the number of messages consumed
 	if mq.rateLimit != nil {
 		batchSize = mq.doRateLimit(ctx, batchSize)
 	}
 
-	streams, err := mq.opts.Client.XReadGroup(ctx, &redis.XReadGroupArgs{
-		Streams:  []string{mq.streamString(), ">"},
-		Group:    mq.opts.ConsumeOpts.ConsumerGroup,
-		Consumer: mq.opts.ConsumeOpts.ConsumerID,
-		Count:    batchSize,
-		Block:    mq.opts.ConsumeOpts.BlockDuration,
-	}).Result()
-	if err != nil {
-		if err == redis.Nil {
-			return 0, nil // 没有消息
+	var newMessages []redis.XMessage
+	var messages []*Message
+	var messageIDs, ackMessageIds []string
+	var links []trace.Link
+
+	if isPending {
+		claimed, _, err := mq.opts.Client.XAutoClaim(ctx, &redis.XAutoClaimArgs{
+			Stream:   mq.streamString(),
+			Group:    mq.opts.ConsumeOpts.ConsumerGroup,
+			Consumer: mq.opts.ConsumeOpts.ConsumerID,
+			Start:    "-",
+			MinIdle:  mq.opts.ConsumeOpts.PendingTimeout,
+			Count:    batchSize,
+		}).Result()
+		if err != nil {
+			return 0, fmt.Errorf("failed to claim pending messages: %w", err)
 		}
-		if strings.HasPrefix(err.Error(), "NOGROUP") {
-			if err := mq.ensureConsumerGroup(ctx, mq.opts.ConsumeOpts.ConsumerGroup); err != nil {
-				return 0, err
+
+		newMessages = claimed
+	} else {
+		streams, err := mq.opts.Client.XReadGroup(ctx, &redis.XReadGroupArgs{
+			Streams:  []string{mq.streamString(), ">"},
+			Group:    mq.opts.ConsumeOpts.ConsumerGroup,
+			Consumer: mq.opts.ConsumeOpts.ConsumerID,
+			Count:    batchSize,
+			Block:    mq.opts.ConsumeOpts.BlockDuration,
+		}).Result()
+		if err != nil {
+			if err == redis.Nil {
+				return 0, nil // No messages
 			}
-
-			return mq.processNormalMessages(ctx, handler)
-		}
-		return 0, fmt.Errorf("failed to read from stream: %w", err)
-	}
-
-	var wg sync.WaitGroup
-	var processed uint32
-	errors := make(chan error, mq.opts.ConsumeOpts.BatchSize)
-	semaphore := make(chan struct{}, mq.opts.ConsumeOpts.MaxConcurrency)
-
-	for _, stream := range streams {
-		slog.DebugContext(ctx, "read messages", "stream", stream.Stream, "count", len(stream.Messages), "consumer", mq.opts.ConsumeOpts.ConsumerID)
-
-		for _, message := range stream.Messages {
-
-			wg.Add(1)
-			semaphore <- struct{}{} // 获取信号量
-
-			go func(msg redis.XMessage) {
-				defer wg.Done()
-				defer func() { <-semaphore }() // 释放信号量
-
-				err := mq.processSingleMessage(ctx, msg, handler)
-				if err != nil {
-					errors <- err
+			if strings.HasPrefix(err.Error(), "NOGROUP") {
+				if err := mq.ensureConsumerGroup(ctx, mq.opts.ConsumeOpts.ConsumerGroup); err != nil {
+					return 0, err
 				}
+				return mq.processMessages(ctx, handler, isPending)
+			}
+			return 0, fmt.Errorf("failed to read from stream: %w", err)
+		}
 
-				atomic.AddUint32(&processed, 1)
-			}(message)
+		for _, stream := range streams {
+			newMessages = append(newMessages, stream.Messages...)
 		}
 	}
 
-	wg.Wait()
-	close(errors)
-
-	// 收集并报告错误
-	var errs []error
-	for err := range errors {
-		errs = append(errs, err)
+	for _, message := range newMessages {
+		m, err := mq.unmarshalMessage(message)
+		if err != nil {
+			slog.ErrorContext(ctx, "failed to unmarshal message", "error", err)
+			ackMessageIds = append(ackMessageIds, message.ID)
+			continue
+		}
+		if mq.opts.ConsumeOpts.SubExpression != "*" {
+			if _, ok := mq.subExpressionMap[m.Tag]; !ok {
+				ackMessageIds = append(ackMessageIds, m.GetId())
+				continue
+			}
+		}
+		messages = append(messages, m)
+		messageIDs = append(messageIDs, message.ID)
+		links = append(links, trace.Link{
+			SpanContext: trace.SpanContextFromContext(otel.GetTextMapPropagator().Extract(ctx, propagation.MapCarrier(m.GetMetadata()))),
+		})
 	}
 
-	if len(errs) > 0 {
-		return processed, fmt.Errorf("encountered %d errors during message processing: %v", len(errs), errs)
+	_ = mq.ackMessages(ctx, ackMessageIds...)
+
+	if len(messages) == 0 {
+		return 0, nil
 	}
-
-	return processed, nil
-}
-
-func (mq *MessageQueue) processSingleMessage(ctx context.Context, msg redis.XMessage, handler MessageHandler) error {
-	m, err := mq.unmarshalMessage(msg)
-	if err != nil {
-		return fmt.Errorf("failed to unmarshal message: %w", err)
-	}
-
-	slog.DebugContext(ctx, "processing message", "msg", m.String())
 
 	if mq.opts.TracerProvider != nil {
-		ctx = otel.GetTextMapPropagator().Extract(ctx, propagation.MapCarrier(m.GetMetadata()))
 		var span trace.Span
-		ctx, span = mq.opts.TracerProvider.Tracer("rsmq").Start(ctx, "ConsumeStream", trace.WithAttributes(
-			attribute.String("topic", mq.opts.Topic),
-			attribute.String("consumer_group", mq.opts.ConsumeOpts.ConsumerGroup),
-		))
+		ctx, span = mq.opts.TracerProvider.Tracer("rsmq").Start(ctx, "ConsumeStream",
+			trace.WithLinks(links...),
+			trace.WithAttributes(
+				attribute.String("topic", mq.opts.Topic),
+				attribute.String("consumer_group", mq.opts.ConsumeOpts.ConsumerGroup),
+				attribute.Int("message_count", len(messages)),
+			))
 		defer span.End()
 	}
 
-	if mq.opts.ConsumeOpts.SubExpression != "*" {
-		if _, ok := mq.subExpressionMap[m.GetTag()]; !ok {
-			// filter out messages that don't match the sub expression
-			if err := mq.opts.Client.XAck(ctx, mq.streamString(), mq.opts.ConsumeOpts.ConsumerGroup, msg.ID).Err(); err != nil {
-				return fmt.Errorf("failed to acknowledge message %s: %w", msg.ID, err)
-			}
+	errors := handler(ctx, messages)
 
-			return nil
-		}
-	}
+	retryMessages := make([]*Message, 0, len(messages))
+	successMessageIds := make([]string, 0, len(messages))
 
-	result := handler(ctx, m)
-
-	if result == nil {
-		// Message processed successfully
-		if err := mq.opts.Client.XAck(ctx, mq.streamString(), mq.opts.ConsumeOpts.ConsumerGroup, msg.ID).Err(); err != nil {
-			return fmt.Errorf("failed to acknowledge message %s: %w", msg.ID, err)
-		}
-	} else {
-		message := proto.Clone(m).(*Message)
-		// Message processing failed, implement retry logic
-		if atomic.AddUint32(&message.RetryCount, 1) <= mq.opts.ConsumeOpts.MaxRetryLimit {
-			// Re-enqueue the message with updated retry count
-			return mq.retry(ctx, message)
+	for i, msg := range messages {
+		if len(errors) > i && errors[i] != nil {
+			retryMessages = append(retryMessages, msg)
 		} else {
-			// Max retries reached, handle accordingly (e.g., move to dead letter queue)
-			slog.WarnContext(ctx, "message reached max retry limit", "error", result.Error)
-			// Here you might want to implement dead letter queue logic
-			return mq.send2dlq(ctx, message)
+			successMessageIds = append(successMessageIds, messageIDs[i])
 		}
 	}
 
-	return nil
+	for _, message := range retryMessages {
+		msg := proto.Clone(message).(*Message)
+		if atomic.AddUint32(&msg.RetryCount, 1) > mq.opts.ConsumeOpts.MaxRetryLimit {
+			// Send to DLQ
+			if err := mq.send2dlq(ctx, msg); err != nil {
+				slog.ErrorContext(ctx, "failed to send message to dlq", "error", err)
+			}
+		} else {
+			// Retry the message
+			if err := mq.retry(ctx, msg); err != nil {
+				slog.ErrorContext(ctx, "failed to retry message", "error", err)
+			}
+		}
+	}
+
+	// Acknowledge successfully processed messages
+	_ = mq.ackMessages(ctx, successMessageIds...)
+
+	return uint32(len(messages)), nil
+}
+
+func (mq *MessageQueue) ackMessages(ctx context.Context, ids ...string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+
+	err := mq.opts.Client.XAck(ctx, mq.streamString(), mq.opts.ConsumeOpts.ConsumerGroup, ids...).Err()
+	if err != nil {
+		return fmt.Errorf("failed to acknowledge message: %w", err)
+	}
+	return err
 }
 
 func (mq *MessageQueue) getNextDelayedMessageTime(ctx context.Context) (time.Time, error) {
@@ -705,31 +747,6 @@ func (mq *MessageQueue) unmarshalMessage(msg redis.XMessage) (*Message, error) {
 	}
 	m.Id = msg.ID
 	return &m, nil
-}
-
-func (mq *MessageQueue) processPendingMessages(ctx context.Context, handler MessageHandler) (uint32, error) {
-	claimed, _, err := mq.opts.Client.XAutoClaim(ctx, &redis.XAutoClaimArgs{
-		Stream:   mq.streamString(),
-		Group:    mq.opts.ConsumeOpts.ConsumerGroup,
-		Consumer: mq.opts.ConsumeOpts.ConsumerID,
-		Start:    "-",
-		MinIdle:  mq.opts.ConsumeOpts.PendingTimeout,
-		Count:    mq.opts.ConsumeOpts.BatchSize,
-	}).Result()
-	if err != nil {
-		return 0, fmt.Errorf("failed to claim pending messages: %w", err)
-	}
-
-	var processed uint32
-	for _, msg := range claimed {
-		err := mq.processSingleMessage(ctx, msg, handler)
-		if err != nil {
-			continue
-		}
-		processed++
-	}
-
-	return processed, nil
 }
 
 func (mq *MessageQueue) doRateLimit(ctx context.Context, n int64) int64 {
