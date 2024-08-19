@@ -723,6 +723,8 @@ func (mq *MessageQueue) send2dlq(ctx context.Context, msg *Message) error {
 	// Add to dlq stream
 	err = pipe.XAdd(ctx, &redis.XAddArgs{
 		Stream: mq.streamDlqKeyString(),
+		MaxLen: mq.opts.RetentionOpts.MaxLen,
+		Approx: true,
 		Values: map[string]interface{}{"message": string(messageBytes)},
 	}).Err()
 	if err != nil {
