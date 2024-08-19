@@ -647,6 +647,11 @@ func (mq *MessageQueue) cleanIdleMessages(ctx context.Context) error {
 		return fmt.Errorf("failed to trim stream: %w", err)
 	}
 
+	_, err = mq.opts.Client.XTrimMinIDApprox(ctx, mq.streamDlqKeyString(), minId, 1000).Result()
+	if err != nil {
+		return fmt.Errorf("failed to trim dlq stream: %w", err)
+	}
+
 	return nil
 }
 
