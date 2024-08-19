@@ -464,9 +464,6 @@ func (mq *MessageQueue) processMessages(ctx context.Context, handler BatchMessag
 	}
 
 	var newMessages []redis.XMessage
-	var messages []*Message
-	var messageIDs, ackMessageIds []string
-	var links []trace.Link
 
 	if isPending {
 		claimed, _, err := mq.opts.Client.XAutoClaim(ctx, &redis.XAutoClaimArgs{
@@ -508,16 +505,20 @@ func (mq *MessageQueue) processMessages(ctx context.Context, handler BatchMessag
 		}
 	}
 
+	messages := make([]*Message, 0, len(newMessages))
+	messageIDs, invalidMessageIds := make([]string, 0, len(newMessages)), make([]string, 0, len(newMessages))
+	links := make([]trace.Link, 0, len(newMessages))
+
 	for _, message := range newMessages {
 		m, err := mq.unmarshalMessage(message)
 		if err != nil {
 			slog.ErrorContext(ctx, "failed to unmarshal message", "error", err)
-			ackMessageIds = append(ackMessageIds, message.ID)
+			invalidMessageIds = append(invalidMessageIds, message.ID)
 			continue
 		}
 		if mq.opts.ConsumeOpts.SubExpression != "*" {
 			if _, ok := mq.subExpressionMap[m.Tag]; !ok {
-				ackMessageIds = append(ackMessageIds, m.GetId())
+				invalidMessageIds = append(invalidMessageIds, m.GetId())
 				continue
 			}
 		}
@@ -528,7 +529,7 @@ func (mq *MessageQueue) processMessages(ctx context.Context, handler BatchMessag
 		})
 	}
 
-	_ = mq.ackMessages(ctx, ackMessageIds...)
+	mq.ackMessages(ctx, invalidMessageIds...)
 
 	if len(messages) == 0 {
 		return 0, nil
@@ -575,21 +576,21 @@ func (mq *MessageQueue) processMessages(ctx context.Context, handler BatchMessag
 	}
 
 	// Acknowledge successfully processed messages
-	_ = mq.ackMessages(ctx, successMessageIds...)
+	mq.ackMessages(ctx, successMessageIds...)
 
 	return uint32(len(messages)), nil
 }
 
-func (mq *MessageQueue) ackMessages(ctx context.Context, ids ...string) error {
+func (mq *MessageQueue) ackMessages(ctx context.Context, ids ...string) {
 	if len(ids) == 0 {
-		return nil
+		return
 	}
 
 	err := mq.opts.Client.XAck(ctx, mq.streamString(), mq.opts.ConsumeOpts.ConsumerGroup, ids...).Err()
 	if err != nil {
-		return fmt.Errorf("failed to acknowledge message: %w", err)
+		slog.ErrorContext(ctx, "failed to ack messages", "error", err)
 	}
-	return err
+	return
 }
 
 func (mq *MessageQueue) getNextDelayedMessageTime(ctx context.Context) (time.Time, error) {
