@@ -327,10 +327,10 @@ func (mq *MessageQueue) ensureConsumerGroup(ctx context.Context, group string) e
 
 // Consume starts consuming messages from the queue
 func (mq *MessageQueue) Consume(ctx context.Context, handler MessageHandler) error {
-	return mq.BatchConsume(ctx, func(ctx context.Context, messages []*Message) []error {
-		eg := &errgroup.Group{}
-		eg.SetLimit(int(mq.opts.ConsumeOpts.MaxConcurrency))
+	eg := &errgroup.Group{}
+	eg.SetLimit(int(mq.opts.ConsumeOpts.MaxConcurrency))
 
+	return mq.BatchConsume(ctx, func(ctx context.Context, messages []*Message) []error {
 		errors := make([]error, len(messages))
 		for i, msg := range messages {
 			eg.Go(func() error {
