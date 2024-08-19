@@ -197,14 +197,18 @@ func New(opts Options) *MessageQueue {
 		}
 
 		mq.cron.Schedule(cron.Every(opts.ConsumeOpts.IdleConsumerCleanInterval), cron.FuncJob(func() {
-			_, err := mq.cleanIdleConsumers(context.Background())
+			err := mq.withRedisLock(context.Background(), mq.streamLockKeyString(), func(ctx context.Context) error {
+				return mq.cleanIdleConsumers(context.Background())
+			})
 			if err != nil {
 				slog.Error("failed to clean idle consumers", "error", err)
 			}
 		}))
 
 		mq.cron.Schedule(cron.Every(opts.RetentionOpts.CheckRetentionInterval), cron.FuncJob(func() {
-			err := mq.cleanIdleMessages(context.Background())
+			err := mq.withRedisLock(context.Background(), mq.streamLockKeyString(), func(ctx context.Context) error {
+				return mq.cleanIdleMessages(context.Background())
+			})
 			if err != nil {
 				slog.Error("failed to clean idle messages", "error", err)
 			}
@@ -583,16 +587,10 @@ func generateConsumerID() string {
 	return fmt.Sprintf("%s-%d", hostname, os.Getpid())
 }
 
-func (mq *MessageQueue) cleanIdleConsumers(ctx context.Context) (int, error) {
-	lock, err := mq.redisLock.Obtain(ctx, mq.streamLockKeyString(), 3*time.Second, &redislock.Options{})
-	if err != nil && err != redislock.ErrNotObtained {
-		return 0, fmt.Errorf("failed to obtain lock: %w", err)
-	}
-	defer func() { _ = lock.Release(ctx) }()
-
+func (mq *MessageQueue) cleanIdleConsumers(ctx context.Context) error {
 	consumers, err := mq.opts.Client.XInfoConsumers(ctx, mq.streamString(), mq.opts.ConsumeOpts.ConsumerGroup).Result()
 	if err != nil {
-		return 0, fmt.Errorf("failed to get consumers: %w", err)
+		return fmt.Errorf("failed to get consumers: %w", err)
 	}
 
 	for _, consumer := range consumers {
@@ -605,24 +603,28 @@ func (mq *MessageQueue) cleanIdleConsumers(ctx context.Context) (int, error) {
 			_ = mq.opts.Client.XGroupDelConsumer(ctx, mq.streamString(), mq.opts.ConsumeOpts.ConsumerGroup, consumer.Name).Err()
 		}
 	}
-	return 0, nil
+	return nil
 }
 
 func (mq *MessageQueue) cleanIdleMessages(ctx context.Context) error {
-	lock, err := mq.redisLock.Obtain(ctx, mq.streamLockKeyString(), 3*time.Second, &redislock.Options{})
-	if err != nil && err != redislock.ErrNotObtained {
-		return fmt.Errorf("failed to obtain lock: %w", err)
-	}
-	defer func() { _ = lock.Release(ctx) }()
-
 	minId := fmt.Sprintf("%d", time.Now().Add(-mq.opts.RetentionOpts.MaxRetentionTime).UnixMilli())
 
-	_, err = mq.opts.Client.XTrimMinIDApprox(ctx, mq.streamString(), minId, 1000).Result()
+	_, err := mq.opts.Client.XTrimMinIDApprox(ctx, mq.streamString(), minId, 1000).Result()
 	if err != nil {
 		return fmt.Errorf("failed to trim stream: %w", err)
 	}
 
 	return nil
+}
+
+func (mq *MessageQueue) withRedisLock(ctx context.Context, key string, f func(context.Context) error) error {
+	lock, err := mq.redisLock.Obtain(ctx, key, 3*time.Second, &redislock.Options{})
+	if err != nil {
+		return fmt.Errorf("failed to obtain lock: %w", err)
+	}
+	defer func() { _ = lock.Release(ctx) }()
+
+	return f(ctx)
 }
 
 func (q *MessageQueue) retry(ctx context.Context, msg *Message) error {

@@ -27,6 +27,6 @@ func TestCleanIdleConsumer(t *testing.T) {
 
 	time.Sleep(time.Second)
 
-	_, err := queue.cleanIdleConsumers(context.Background())
+	err := queue.cleanIdleConsumers(context.Background())
 	require.Nil(t, err)
 }
