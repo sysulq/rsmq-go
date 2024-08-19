@@ -55,13 +55,25 @@ type Options struct {
 	// Topic is the topic name of the message
 	// Must be set
 	Topic string
-	// MaxLen is the maximum length of the stream
-	// Default is 1000
-	MaxLen int64
+	// RetentionOpts represents options for retention policy
+	RetentionOpts RetentionOpts
 	// TracerProvider is the OpenTelemetry tracer provider
 	TracerProvider trace.TracerProvider
 	// ConsumeOpts represents options for consuming messages
 	ConsumeOpts ConsumeOpts
+}
+
+// RetentionOpts represents options for retention policy
+type RetentionOpts struct {
+	// MaxLen is the maximum length of the stream
+	// Default is 20,000,000
+	MaxLen int64
+	// MaxRetentionTime is the maximum retention time of the stream
+	// Default is 168 hours
+	MaxRetentionTime time.Duration
+	// CheckRetentionInterval is the interval to check retention time
+	// Default is 5 minutes
+	CheckRetentionInterval time.Duration
 }
 
 // ConsumeOpts represents options for consuming messages
@@ -127,7 +139,11 @@ func New(opts Options) *MessageQueue {
 	}
 
 	defaultOpts := Options{
-		MaxLen: 1000,
+		RetentionOpts: RetentionOpts{
+			MaxLen:                 20000000,
+			MaxRetentionTime:       168 * time.Hour,
+			CheckRetentionInterval: 5 * time.Minute,
+		},
 		ConsumeOpts: ConsumeOpts{
 			BatchSize:                 100,
 			MaxPollInterval:           time.Second,
@@ -181,7 +197,17 @@ func New(opts Options) *MessageQueue {
 		}
 
 		mq.cron.Schedule(cron.Every(opts.ConsumeOpts.IdleConsumerCleanInterval), cron.FuncJob(func() {
-			_, _ = mq.cleanIdleConsumers(context.Background())
+			_, err := mq.cleanIdleConsumers(context.Background())
+			if err != nil {
+				slog.Error("failed to clean idle consumers", "error", err)
+			}
+		}))
+
+		mq.cron.Schedule(cron.Every(opts.RetentionOpts.CheckRetentionInterval), cron.FuncJob(func() {
+			err := mq.cleanIdleMessages(context.Background())
+			if err != nil {
+				slog.Error("failed to clean idle messages", "error", err)
+			}
 		}))
 
 		mq.cron.Start()
@@ -211,7 +237,7 @@ func (mq *MessageQueue) enqueueMessage(ctx context.Context, pipe redis.Cmdable, 
 		// Add to stream
 		err = pipe.XAdd(ctx, &redis.XAddArgs{
 			Stream: mq.streamString(),
-			MaxLen: mq.opts.MaxLen,
+			MaxLen: mq.opts.RetentionOpts.MaxLen,
 			Approx: true,
 			Values: map[string]interface{}{"message": string(messageBytes)},
 		}).Err()
@@ -560,14 +586,13 @@ func generateConsumerID() string {
 func (mq *MessageQueue) cleanIdleConsumers(ctx context.Context) (int, error) {
 	lock, err := mq.redisLock.Obtain(ctx, mq.streamLockKeyString(), 3*time.Second, &redislock.Options{})
 	if err != nil && err != redislock.ErrNotObtained {
-		slog.ErrorContext(ctx, "failed to obtain lock", "error", err)
-		return 0, err
+		return 0, fmt.Errorf("failed to obtain lock: %w", err)
 	}
 	defer func() { _ = lock.Release(ctx) }()
 
 	consumers, err := mq.opts.Client.XInfoConsumers(ctx, mq.streamString(), mq.opts.ConsumeOpts.ConsumerGroup).Result()
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("failed to get consumers: %w", err)
 	}
 
 	for _, consumer := range consumers {
@@ -583,18 +608,35 @@ func (mq *MessageQueue) cleanIdleConsumers(ctx context.Context) (int, error) {
 	return 0, nil
 }
 
+func (mq *MessageQueue) cleanIdleMessages(ctx context.Context) error {
+	lock, err := mq.redisLock.Obtain(ctx, mq.streamLockKeyString(), 3*time.Second, &redislock.Options{})
+	if err != nil && err != redislock.ErrNotObtained {
+		return fmt.Errorf("failed to obtain lock: %w", err)
+	}
+	defer func() { _ = lock.Release(ctx) }()
+
+	minId := fmt.Sprintf("%d", time.Now().Add(-mq.opts.RetentionOpts.MaxRetentionTime).UnixMilli())
+
+	_, err = mq.opts.Client.XTrimMinIDApprox(ctx, mq.streamString(), minId, 1000).Result()
+	if err != nil {
+		return fmt.Errorf("failed to trim stream: %w", err)
+	}
+
+	return nil
+}
+
 func (q *MessageQueue) retry(ctx context.Context, msg *Message) error {
 	// Make the delete and re-queue operation atomic in case we crash midway
 	// and lose a message.
 	pipe := q.opts.Client.TxPipeline()
 	// When retry a msg, ack it before we delete msg.
 	if err := pipe.XAck(ctx, q.streamString(), q.opts.ConsumeOpts.ConsumerGroup, msg.GetId()).Err(); err != nil {
-		return err
+		return fmt.Errorf("failed to ack message: %w", err)
 	}
 
 	err := pipe.XDel(ctx, q.streamString(), msg.GetId()).Err()
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to delete message: %w", err)
 	}
 
 	// Set the origin message id if it's not set
@@ -620,12 +662,12 @@ func (mq *MessageQueue) send2dlq(ctx context.Context, msg *Message) error {
 	pipe := mq.opts.Client.TxPipeline()
 	// When retry a msg, ack it before we delete msg.
 	if err := pipe.XAck(ctx, mq.streamString(), mq.opts.ConsumeOpts.ConsumerGroup, msg.GetId()).Err(); err != nil {
-		return err
+		return fmt.Errorf("failed to ack message: %w", err)
 	}
 
 	err := pipe.XDel(ctx, mq.streamString(), msg.GetId()).Err()
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to delete message: %w", err)
 	}
 
 	// Set the origin message id if it's not set
@@ -657,7 +699,7 @@ func (mq *MessageQueue) unmarshalMessage(msg redis.XMessage) (*Message, error) {
 	messageJSON := msg.Values["message"].(string)
 	var m Message
 	if err := proto.Unmarshal([]byte(messageJSON), &m); err != nil {
-		return nil, fmt.Errorf("error unmarshaling message: %w", err)
+		return nil, fmt.Errorf("error unmarshal message: %w", err)
 	}
 	m.Id = msg.ID
 	return &m, nil
@@ -673,8 +715,7 @@ func (mq *MessageQueue) processPendingMessages(ctx context.Context, handler Mess
 		Count:    mq.opts.ConsumeOpts.BatchSize,
 	}).Result()
 	if err != nil {
-		slog.ErrorContext(ctx, "failed to claim pending message", "error", err)
-		return 0, err
+		return 0, fmt.Errorf("failed to claim pending messages: %w", err)
 	}
 
 	var processed uint32
