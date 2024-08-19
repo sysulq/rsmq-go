@@ -590,7 +590,6 @@ func (mq *MessageQueue) ackMessages(ctx context.Context, ids ...string) {
 	if err != nil {
 		slog.ErrorContext(ctx, "failed to ack messages", "error", err)
 	}
-	return
 }
 
 func (mq *MessageQueue) getNextDelayedMessageTime(ctx context.Context) (time.Time, error) {
