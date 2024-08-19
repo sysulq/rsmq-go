@@ -39,33 +39,6 @@ type MessageHandler func(context.Context, *Message) error
 // BatchMessageHandler is a function that processes a batch of messages and returns a list of errors
 type BatchMessageHandler func(context.Context, []*Message) []error
 
-// Serial is a message handler that processes messages serially
-func Serial(handler MessageHandler) BatchMessageHandler {
-	return func(ctx context.Context, messages []*Message) []error {
-		errors := make([]error, len(messages))
-		for i, msg := range messages {
-			errors[i] = handler(ctx, msg)
-		}
-		return errors
-	}
-}
-
-// Parallel is a message handler that processes messages concurrently
-func Parallel(handler MessageHandler) BatchMessageHandler {
-	return func(ctx context.Context, messages []*Message) []error {
-		eg, ctx := errgroup.WithContext(ctx)
-		errors := make([]error, len(messages))
-		for i, msg := range messages {
-			eg.Go(func() error {
-				errors[i] = handler(ctx, msg)
-				return errors[i]
-			})
-		}
-		_ = eg.Wait()
-		return errors
-	}
-}
-
 // MessageQueue manages message production and consumption
 type MessageQueue struct {
 	opts        Options
@@ -353,7 +326,25 @@ func (mq *MessageQueue) ensureConsumerGroup(ctx context.Context, group string) e
 }
 
 // Consume starts consuming messages from the queue
-func (mq *MessageQueue) Consume(ctx context.Context, handler BatchMessageHandler) error {
+func (mq *MessageQueue) Consume(ctx context.Context, handler MessageHandler) error {
+	return mq.BatchConsume(ctx, func(ctx context.Context, messages []*Message) []error {
+		eg, ctx := errgroup.WithContext(ctx)
+		eg.SetLimit(int(mq.opts.ConsumeOpts.MaxConcurrency))
+
+		errors := make([]error, len(messages))
+		for i, msg := range messages {
+			eg.Go(func() error {
+				errors[i] = handler(ctx, msg)
+				return errors[i]
+			})
+		}
+		_ = eg.Wait()
+		return errors
+	})
+}
+
+// BatchConsume starts consuming messages from the queue in batches
+func (mq *MessageQueue) BatchConsume(ctx context.Context, handler BatchMessageHandler) error {
 	opts := mq.opts.ConsumeOpts
 
 	if opts.ConsumerGroup == "" {

@@ -56,7 +56,7 @@ func TestRateLimit(t *testing.T) {
 	go func() {
 		err := queue.Consume(
 			context.Background(),
-			rsmq.Parallel(func(ctx context.Context, task *rsmq.Message) error {
+			func(ctx context.Context, task *rsmq.Message) error {
 				var payload map[string]interface{}
 				_ = json.Unmarshal(task.Payload, &payload)
 				fmt.Printf("Processing task: %s, payload: %v\n", task.Id, payload)
@@ -64,7 +64,7 @@ func TestRateLimit(t *testing.T) {
 				results <- payload
 
 				return nil
-			}),
+			},
 		)
 		if err != nil {
 			log.Fatalf("Error consuming tasks: %v", err)

@@ -43,13 +43,13 @@ func Example_produceAndConsume() {
 	go func() {
 		err := queue.Consume(
 			context.Background(),
-			rsmq.Serial(func(ctx context.Context, task *rsmq.Message) error {
+			func(ctx context.Context, task *rsmq.Message) error {
 				var payload map[string]interface{}
 				_ = json.Unmarshal(task.Payload, &payload)
 				fmt.Printf("Processing task, payload: %v\n", payload)
 
 				return nil
-			}),
+			},
 		)
 		if err != nil {
 			log.Fatalf("Error consuming tasks: %v", err)

@@ -54,12 +54,12 @@ func TestOtel(t *testing.T) {
 	require.Nil(t, err)
 
 	go func() {
-		_ = queue.Consume(context.Background(), rsmq.Parallel(func(ctx context.Context, task *rsmq.Message) error {
+		_ = queue.Consume(context.Background(), func(ctx context.Context, task *rsmq.Message) error {
 			fmt.Println(task.String(), task.GetMetadata())
 			fmt.Println(trace.SpanContextFromContext(ctx).TraceID().String())
 
 			return nil
-		}))
+		})
 	}()
 
 	time.Sleep(time.Second)

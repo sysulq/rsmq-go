@@ -31,11 +31,11 @@ func TestPending(t *testing.T) {
 	})
 	defer queuePending.Close()
 	go func() {
-		_ = queuePending.Consume(context.Background(), rsmq.Parallel(func(ctx context.Context, m *rsmq.Message) error {
+		_ = queuePending.Consume(context.Background(), func(ctx context.Context, m *rsmq.Message) error {
 			time.Sleep(10 * time.Second)
 			fmt.Println("Pending consumer", m.Id)
 			return nil
-		}))
+		})
 	}()
 
 	// Produce tasks
@@ -66,12 +66,12 @@ func TestPending(t *testing.T) {
 	go func() {
 		err := queue.Consume(
 			context.Background(),
-			rsmq.Parallel(func(ctx context.Context, task *rsmq.Message) error {
+			func(ctx context.Context, task *rsmq.Message) error {
 				var payload map[string]interface{}
 				_ = json.Unmarshal(task.Payload, &payload)
 				count.Add(1)
 				return nil
-			}),
+			},
 		)
 		if err != nil {
 			log.Fatalf("Error consuming tasks: %v", err)
