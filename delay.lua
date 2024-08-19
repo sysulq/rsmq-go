@@ -10,7 +10,6 @@ local processed = 0
 if #messages > 0 then
     for i = 1, #messages do
         local messageData = messages[i]
-        local score = messages[i+1]
         
         -- Add message to the stream
         redis.call('XADD', streamKey, '*', 'message', messageData)
