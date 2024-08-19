@@ -12,15 +12,3 @@ func Map2[KIn, VIn, KOut, VOut any](f func(KIn, VIn) (KOut, VOut), seq iter.Seq2
 		}
 	}
 }
-
-// Filter returns an iterator over seq that only includes
-// the values v for which f(v) is true.
-func Filter[V any](f func(V) bool, seq iter.Seq[V]) iter.Seq[V] {
-	return func(yield func(V) bool) {
-		for v := range seq {
-			if f(v) && !yield(v) {
-				return
-			}
-		}
-	}
-}
