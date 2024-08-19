@@ -91,15 +91,9 @@ type ConsumeOpts struct {
 	// BatchSize is the number of messages to consume in a single batch
 	// If set, the consumer will consume messages in batches
 	BatchSize int64
-	// MaxPollInterval is the maximum time to wait between polls
-	// If set, the consumer will wait for the specified duration
-	MaxPollInterval time.Duration
-	// MinPollInterval is the minimum time to wait between polls
-	// If set, the consumer will wait for the specified duration
-	MinPollInterval time.Duration
-	// BlockDuration is the maximum time to block while waiting for messages
+	// MaxBlockDuration is the maximum time to block while waiting for messages
 	// If set, the consumer will block for the specified duration
-	BlockDuration time.Duration
+	MaxBlockDuration time.Duration
 	// AutoCreateGroup determines whether the consumer group should be created automatically
 	// If set, the consumer group will be created if it does not exist
 	AutoCreateGroup bool
@@ -150,9 +144,7 @@ func New(opts Options) *MessageQueue {
 		},
 		ConsumeOpts: ConsumeOpts{
 			BatchSize:                 100,
-			MaxPollInterval:           time.Second,
-			MinPollInterval:           10 * time.Millisecond,
-			BlockDuration:             100 * time.Millisecond,
+			MaxBlockDuration:          100 * time.Millisecond,
 			MaxConcurrency:            100,
 			ConsumerID:                generateConsumerID(),
 			ConsumerIdleTimeout:       2 * time.Hour,
@@ -240,20 +232,22 @@ func (mq *MessageQueue) enqueueMessage(ctx context.Context, pipe redis.Cmdable, 
 			return fmt.Errorf("failed to add message to delayed set: %w", err)
 		}
 
-		slog.DebugContext(ctx, "added message to delayed set", "id", msg.Id, "deliverTimestamp", msg.DeliverTimestamp)
+		slog.DebugContext(ctx, "added message to delayed set", "id", msg.Id, "deliverTimestamp", msg.DeliverTimestamp, "payload", msg.GetPayload())
 	} else {
 		// Add to stream
-		err = pipe.XAdd(ctx, &redis.XAddArgs{
+		result, err := pipe.XAdd(ctx, &redis.XAddArgs{
 			Stream: mq.streamString(),
 			MaxLen: mq.opts.RetentionOpts.MaxLen,
 			Approx: true,
 			Values: map[string]interface{}{"message": string(messageBytes)},
-		}).Err()
+		}).Result()
 		if err != nil {
 			return fmt.Errorf("failed to add message to stream: %w", err)
 		}
 
-		slog.DebugContext(ctx, "added message to stream", "id", msg.Id)
+		msg.Id = result
+
+		slog.DebugContext(ctx, "added message to stream", "id", msg.Id, "payload", msg.GetPayload())
 	}
 
 	return nil
@@ -351,8 +345,6 @@ func (mq *MessageQueue) BatchConsume(ctx context.Context, handler BatchMessageHa
 		return fmt.Errorf("consumer group is required")
 	}
 
-	currentPollInterval := opts.MinPollInterval
-
 	for {
 		select {
 		case <-ctx.Done():
@@ -362,48 +354,12 @@ func (mq *MessageQueue) BatchConsume(ctx context.Context, handler BatchMessageHa
 				return nil
 			}
 
-			start := time.Now()
-
-			// Process delayed messages
-			delayedProcessed, err := mq.processDelayedMessages(ctx)
-			if err != nil {
-				slog.ErrorContext(ctx, "failed to process delayed messages", "error", err)
-			}
-
 			// Consume from stream
-			streamProcessed, err := mq.consumeStream(ctx, handler)
+			_, err := mq.consumeStream(ctx, handler)
 			if err != nil {
 				slog.ErrorContext(ctx, "failed to consume from stream", "error", err)
 			}
 
-			// Adjust polling interval based on activity
-			if delayedProcessed > 0 || streamProcessed > 0 {
-				currentPollInterval = opts.MinPollInterval
-			} else {
-				currentPollInterval = min(currentPollInterval*2, opts.MaxPollInterval)
-			}
-
-			// Wait for the next poll, but don't exceed the time until the next delayed message
-			nextDelayedTime, err := mq.getNextDelayedMessageTime(ctx)
-			if err != nil {
-				slog.ErrorContext(ctx, "failed to get next delayed message time", "error", err)
-			} else if !nextDelayedTime.IsZero() {
-				currentPollInterval = min(currentPollInterval, time.Until(nextDelayedTime))
-			}
-
-			// Determine the appropriate block duration
-			blockDuration := opts.BlockDuration
-			if !nextDelayedTime.IsZero() {
-				timeUntilNext := time.Until(nextDelayedTime)
-				if timeUntilNext < blockDuration {
-					blockDuration = timeUntilNext
-				}
-			}
-
-			// If no messages were processed and we didn't block, wait for a short time
-			if delayedProcessed == 0 && streamProcessed == 0 && time.Since(start) < blockDuration {
-				time.Sleep(opts.MinPollInterval)
-			}
 		}
 	}
 }
@@ -454,6 +410,12 @@ func (mq *MessageQueue) consumeStream(ctx context.Context, handler BatchMessageH
 		processed += pendingProcessed
 	}
 
+	// Process delayed messages
+	_, err = mq.processDelayedMessages(ctx)
+	if err != nil {
+		slog.ErrorContext(ctx, "failed to process delayed messages", "error", err)
+	}
+
 	return processed, nil
 }
 
@@ -480,12 +442,22 @@ func (mq *MessageQueue) processMessages(ctx context.Context, handler BatchMessag
 
 		newMessages = claimed
 	} else {
+		// Wait for the next poll, but don't exceed the time until the next delayed message
+		nextBlockTime, err := mq.getNextBlockTime(ctx)
+		if err != nil {
+			return 0, err
+		}
+
+		if nextBlockTime == 0 || nextBlockTime > mq.opts.ConsumeOpts.MaxBlockDuration {
+			nextBlockTime = mq.opts.ConsumeOpts.MaxBlockDuration
+		}
+
 		streams, err := mq.opts.Client.XReadGroup(ctx, &redis.XReadGroupArgs{
 			Streams:  []string{mq.streamString(), ">"},
 			Group:    mq.opts.ConsumeOpts.ConsumerGroup,
 			Consumer: mq.opts.ConsumeOpts.ConsumerID,
 			Count:    batchSize,
-			Block:    mq.opts.ConsumeOpts.BlockDuration,
+			Block:    nextBlockTime,
 		}).Result()
 		if err != nil {
 			if err == redis.Nil {
@@ -592,24 +564,18 @@ func (mq *MessageQueue) ackMessages(ctx context.Context, ids ...string) {
 	}
 }
 
-func (mq *MessageQueue) getNextDelayedMessageTime(ctx context.Context) (time.Time, error) {
+func (mq *MessageQueue) getNextBlockTime(ctx context.Context) (time.Duration, error) {
+	// 取最近的一个延迟消息的时间
 	result, err := mq.opts.Client.ZRangeWithScores(ctx, mq.streamDelayKeyString(), 0, 0).Result()
 	if err != nil {
-		return time.Time{}, fmt.Errorf("failed to get next delayed message time: %w", err)
+		return 0, fmt.Errorf("failed to get next delayed message time: %w", err)
 	}
 
 	if len(result) == 0 {
-		return time.Time{}, nil
+		return 0, nil
 	}
 
-	return time.Unix(int64(result[0].Score), 0), nil
-}
-
-func min(a, b time.Duration) time.Duration {
-	if a < b {
-		return a
-	}
-	return b
+	return time.Until(time.Unix(int64(result[0].Score), 0)), nil
 }
 
 func generateConsumerID() string {
@@ -721,15 +687,17 @@ func (mq *MessageQueue) send2dlq(ctx context.Context, msg *Message) error {
 	}
 
 	// Add to dlq stream
-	err = pipe.XAdd(ctx, &redis.XAddArgs{
+	result, err := pipe.XAdd(ctx, &redis.XAddArgs{
 		Stream: mq.streamDlqKeyString(),
 		MaxLen: mq.opts.RetentionOpts.MaxLen,
 		Approx: true,
 		Values: map[string]interface{}{"message": string(messageBytes)},
-	}).Err()
+	}).Result()
 	if err != nil {
 		return fmt.Errorf("failed to add message to dlq stream: %w", err)
 	}
+
+	msg.Id = result
 
 	slog.DebugContext(ctx, "added message to dlq stream", "id", msg.Id)
 

@@ -25,6 +25,7 @@ func TestRateLimit(t *testing.T) {
 		ConsumeOpts: rsmq.ConsumeOpts{
 			ConsumerGroup:   "task_group",
 			AutoCreateGroup: true,
+			MaxConcurrency:  1,
 			RateLimit:       3,
 		},
 	})
