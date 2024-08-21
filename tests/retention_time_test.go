@@ -16,7 +16,7 @@ func TestRetentionTime(t *testing.T) {
 		Addr: "localhost:6379",
 	})
 
-	queue := rsmq.New(rsmq.Options{
+	queue, err := rsmq.New(rsmq.Options{
 		Client: cc,
 		Topic:  "retention_time",
 		RetentionOpts: rsmq.RetentionOpts{
@@ -28,6 +28,7 @@ func TestRetentionTime(t *testing.T) {
 			AutoCreateGroup: true,
 		},
 	})
+	require.Nil(t, err)
 	defer queue.Close()
 
 	// Produce tasks
@@ -36,7 +37,7 @@ func TestRetentionTime(t *testing.T) {
 		Payload: json.RawMessage(`{"message": "Hello world"}`),
 	}
 
-	err := queue.Add(context.Background(), task)
+	err = queue.Add(context.Background(), task)
 	require.NoError(t, err)
 
 	len, err := cc.XLen(context.Background(), "rsmq:{retention_time}").Result()

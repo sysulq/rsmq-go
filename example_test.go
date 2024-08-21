@@ -16,7 +16,7 @@ func Example_produceAndConsume() {
 		Addr: "localhost:6379",
 	})
 
-	queue := rsmq.New(rsmq.Options{
+	queue, err := rsmq.New(rsmq.Options{
 		Client: cc,
 		Topic:  "example",
 		ConsumeOpts: rsmq.ConsumeOpts{
@@ -25,6 +25,9 @@ func Example_produceAndConsume() {
 			MaxConcurrency:  1,
 		},
 	})
+	if err != nil {
+		log.Fatalf("Failed to create queue: %v", err)
+	}
 	defer queue.Close()
 
 	// Produce tasks

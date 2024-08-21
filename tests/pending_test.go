@@ -19,7 +19,7 @@ func TestPending(t *testing.T) {
 		Addr: "localhost:6379",
 	})
 
-	queuePending := rsmq.New(rsmq.Options{
+	queuePending, err := rsmq.New(rsmq.Options{
 		Client: cc,
 		Topic:  "pending",
 		ConsumeOpts: rsmq.ConsumeOpts{
@@ -29,6 +29,7 @@ func TestPending(t *testing.T) {
 			PendingTimeout:  time.Millisecond,
 		},
 	})
+	require.Nil(t, err)
 	defer queuePending.Close()
 	go func() {
 		_ = queuePending.Consume(context.Background(), func(ctx context.Context, m *rsmq.Message) error {
@@ -49,7 +50,7 @@ func TestPending(t *testing.T) {
 		}
 	}
 
-	queue := rsmq.New(rsmq.Options{
+	queue, err := rsmq.New(rsmq.Options{
 		Client: cc,
 		Topic:  "pending",
 		ConsumeOpts: rsmq.ConsumeOpts{
@@ -59,6 +60,7 @@ func TestPending(t *testing.T) {
 			PendingTimeout:  time.Millisecond,
 		},
 	})
+	require.Nil(t, err)
 	defer queue.Close()
 
 	var count atomic.Int32

@@ -21,7 +21,7 @@ func TestTagFilter(t *testing.T) {
 		Addr: "localhost:6379",
 	})
 
-	queue := rsmq.New(rsmq.Options{
+	queue, err := rsmq.New(rsmq.Options{
 		Client: cc,
 		Topic:  "tag_filter",
 		ConsumeOpts: rsmq.ConsumeOpts{
@@ -30,6 +30,7 @@ func TestTagFilter(t *testing.T) {
 			SubExpression:   "tagA||tagB",
 		},
 	})
+	require.Nil(t, err)
 	defer queue.Close()
 
 	waitProducer := make(chan struct{})

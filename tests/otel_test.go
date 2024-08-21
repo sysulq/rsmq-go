@@ -32,7 +32,7 @@ func TestOtel(t *testing.T) {
 		Addr: "localhost:6379",
 	})
 
-	queue := rsmq.New(rsmq.Options{
+	queue, err := rsmq.New(rsmq.Options{
 		Client:         cc,
 		Topic:          "otel",
 		TracerProvider: tp,
@@ -41,6 +41,7 @@ func TestOtel(t *testing.T) {
 			AutoCreateGroup: true,
 		},
 	})
+	require.Nil(t, err)
 	defer queue.Close()
 
 	task := &rsmq.Message{
@@ -50,7 +51,7 @@ func TestOtel(t *testing.T) {
 	ctx, span := tp.Tracer("rsmq").Start(context.Background(), "otel")
 	defer span.End()
 
-	err := queue.Add(ctx, task)
+	err = queue.Add(ctx, task)
 	require.Nil(t, err)
 
 	go func() {

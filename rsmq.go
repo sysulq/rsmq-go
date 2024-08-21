@@ -10,7 +10,6 @@ import (
 	"os"
 	"slices"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -47,7 +46,6 @@ type MessageQueue struct {
 	cron        *cron.Cron
 	redisLock   *redislock.Client
 	rateLimit   *redis_rate.Limiter
-	once        sync.Once
 
 	subExpressionMap map[string]struct{}
 }
@@ -127,13 +125,13 @@ type ConsumeOpts struct {
 var delayScript string
 
 // New creates a new MessageQueue instance
-func New(opts Options) *MessageQueue {
+func New(opts Options) (*MessageQueue, error) {
 	if opts.Client == nil {
-		panic("redis client is required")
+		return nil, fmt.Errorf("client is required")
 	}
 
 	if opts.Topic == "" {
-		panic("topic is required")
+		return nil, fmt.Errorf("topic is required")
 	}
 
 	defaultOpts := Options{
@@ -157,7 +155,7 @@ func New(opts Options) *MessageQueue {
 	}
 
 	if err := mergo.Merge(&opts, defaultOpts); err != nil {
-		panic(fmt.Sprintf("failed to merge options: %v", err))
+		return nil, fmt.Errorf("failed to merge options: %w", err)
 	}
 
 	mq := &MessageQueue{
@@ -168,11 +166,8 @@ func New(opts Options) *MessageQueue {
 		redisLock:   redislock.New(opts.Client),
 	}
 
-	mq.once.Do(func() {
-		// Ensure the stream group specified in the options
-		if opts.ConsumeOpts.ConsumerGroup == "" {
-			return
-		}
+	// Ensure the stream group specified in the options
+	if opts.ConsumeOpts.ConsumerGroup != "" {
 
 		if opts.ConsumeOpts.SubExpression != "*" {
 			mq.subExpressionMap = maps.Collect(Map2(func(k int, v string) (string, struct{}) {
@@ -183,8 +178,7 @@ func New(opts Options) *MessageQueue {
 		if opts.ConsumeOpts.AutoCreateGroup {
 			err := mq.ensureConsumerGroup(context.Background(), opts.ConsumeOpts.ConsumerGroup)
 			if err != nil {
-				slog.Error("failed to ensure consumer group", "error", err)
-				return
+				return nil, fmt.Errorf("failed to ensure consumer group: %w", err)
 			}
 		}
 
@@ -211,9 +205,9 @@ func New(opts Options) *MessageQueue {
 		}))
 
 		mq.cron.Start()
-	})
+	}
 
-	return mq
+	return mq, nil
 }
 
 func (mq *MessageQueue) enqueueMessage(ctx context.Context, pipe redis.Cmdable, msg *Message) error {

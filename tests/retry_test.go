@@ -20,7 +20,7 @@ func TestRetry(t *testing.T) {
 		Addr: "localhost:6379",
 	})
 
-	queue := rsmq.New(rsmq.Options{
+	queue, err := rsmq.New(rsmq.Options{
 		Client: cc,
 		Topic:  "retry",
 		ConsumeOpts: rsmq.ConsumeOpts{
@@ -29,6 +29,7 @@ func TestRetry(t *testing.T) {
 			RetryTimeWait:   10 * time.Millisecond,
 		},
 	})
+	require.Nil(t, err)
 	defer queue.Close()
 	defer func() {
 		_, err := cc.Del(context.Background(), "rsmq:{retry}:dlq").Result()
@@ -41,7 +42,7 @@ func TestRetry(t *testing.T) {
 		Payload: json.RawMessage(`{"message": "Hello world"}`),
 	}
 
-	err := queue.Add(context.Background(), task)
+	err = queue.Add(context.Background(), task)
 	if err != nil {
 		log.Printf("Failed to enqueue task: %v", err)
 	}

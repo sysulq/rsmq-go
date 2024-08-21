@@ -14,7 +14,7 @@ func TestCleanIdleConsumer(t *testing.T) {
 		Addr: "localhost:6379",
 	})
 
-	queue := New(Options{
+	queue, err := New(Options{
 		Client: cc,
 		Topic:  "clean_idle_consumer",
 		ConsumeOpts: ConsumeOpts{
@@ -22,11 +22,12 @@ func TestCleanIdleConsumer(t *testing.T) {
 			AutoCreateGroup: true,
 		},
 	})
+	require.Nil(t, err)
 
 	go func() { _ = queue.Consume(context.Background(), nil) }()
 
 	time.Sleep(time.Second)
 
-	err := queue.cleanIdleConsumers(context.Background())
+	err = queue.cleanIdleConsumers(context.Background())
 	require.Nil(t, err)
 }

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/stretchr/testify/require"
 	"github.com/sysulq/rsmq-go"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -19,7 +20,7 @@ func TestProduceAndConsume(t *testing.T) {
 		Addr: "localhost:6379",
 	})
 
-	queue := rsmq.New(rsmq.Options{
+	queue, err := rsmq.New(rsmq.Options{
 		Client: cc,
 		Topic:  "stream_produce_and_consume",
 		ConsumeOpts: rsmq.ConsumeOpts{
@@ -27,6 +28,7 @@ func TestProduceAndConsume(t *testing.T) {
 			AutoCreateGroup: true,
 		},
 	})
+	require.Nil(t, err)
 	defer queue.Close()
 
 	waitProducer := make(chan struct{})
