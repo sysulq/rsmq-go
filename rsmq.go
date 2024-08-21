@@ -23,6 +23,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/propagation"
+	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/protobuf/proto"
@@ -124,6 +125,19 @@ type ConsumeOpts struct {
 //go:embed delay.lua
 var delayScript string
 
+var (
+	// MessagingRsmqSystem is the messaging system for rsmq
+	MessagingRsmqSystem = attribute.Key("messaging.system").String("rsmq")
+	// MessagingRsmqMessageTopic is the messaging topic for rsmq
+	MessagingRsmqMessageTopic = attribute.Key("messaging.rsmq.message.topic")
+	// MessagingRsmqMessageGroup is the messaging group for rsmq
+	MessagingRsmqMessageGroup = attribute.Key("messaging.rsmq.message.group")
+	// MessagingRsmqMessageID is the messaging ID for rsmq
+	MessagingRsmqMessageTag = attribute.Key("messaging.rsmq.message.tag")
+	// MessagingRsmqMessageID is the messaging ID for rsmq
+	MessagingRsmqMessageDeliveryTimestamp = attribute.Key("messaging.rsmq.message.delivery_timestamp")
+)
+
 // New creates a new MessageQueue instance
 func New(opts Options) (*MessageQueue, error) {
 	if opts.Client == nil {
@@ -213,7 +227,29 @@ func (mq *MessageQueue) enqueueMessage(ctx context.Context, pipe redis.Cmdable, 
 		return fmt.Errorf("failed to marshal message: %w", err)
 	}
 
+	var span trace.Span
+	if span = trace.SpanFromContext(ctx); span.SpanContext().IsValid() {
+		ctx, span = mq.opts.TracerProvider.Tracer("rsmq").Start(ctx, "Add", trace.WithAttributes(
+			MessagingRsmqSystem,
+			MessagingRsmqMessageTopic.String(mq.opts.Topic),
+			MessagingRsmqMessageTag.String(msg.Tag),
+			semconv.MessagingMessageBodySize(len(msg.Payload)),
+		))
+		defer span.End()
+
+		if msg.Metadata == nil {
+			msg.Metadata = make(map[string]string)
+		}
+		otel.GetTextMapPropagator().Inject(ctx, propagation.MapCarrier(msg.Metadata))
+	}
+
 	if msg.GetDeliverTimestamp().GetSeconds() > msg.GetBornTimestamp().GetSeconds() {
+		if span != nil && span.SpanContext().IsValid() {
+			span.SetAttributes(
+				MessagingRsmqMessageDeliveryTimestamp.Int64(msg.DeliverTimestamp.GetSeconds()),
+			)
+		}
+
 		// Add to delayed set with the entire message as the member
 		err = pipe.ZAdd(ctx, mq.streamDelayKeyString(), redis.Z{
 			Score:  float64(msg.GetDeliverTimestamp().GetSeconds()),
@@ -238,6 +274,10 @@ func (mq *MessageQueue) enqueueMessage(ctx context.Context, pipe redis.Cmdable, 
 
 		msg.Id = result
 
+		if span != nil && span.SpanContext().IsValid() {
+			span.SetAttributes(semconv.MessagingMessageID(msg.Id))
+		}
+
 		slog.DebugContext(ctx, "added message to stream", "id", msg.Id, "payload", msg.GetPayload())
 	}
 
@@ -257,19 +297,6 @@ func (mq *MessageQueue) Add(ctx context.Context, message *Message) error {
 	}
 
 	message.Topic = mq.opts.Topic
-
-	if span := trace.SpanFromContext(ctx); span.SpanContext().IsValid() {
-		ctx, span = mq.opts.TracerProvider.Tracer("rsmq").Start(ctx, "Add", trace.WithAttributes(
-			attribute.String("message.id", message.Id),
-			attribute.String("topic", mq.opts.Topic),
-		))
-		defer span.End()
-
-		if message.Metadata == nil {
-			message.Metadata = make(map[string]string)
-		}
-		otel.GetTextMapPropagator().Inject(ctx, propagation.MapCarrier(message.Metadata))
-	}
 
 	return mq.enqueueMessage(ctx, mq.opts.Client, message)
 }
@@ -504,6 +531,12 @@ func (mq *MessageQueue) processMessages(ctx context.Context, handler BatchMessag
 		messageIDs = append(messageIDs, message.ID)
 		links = append(links, trace.Link{
 			SpanContext: trace.SpanContextFromContext(otel.GetTextMapPropagator().Extract(ctx, propagation.MapCarrier(m.GetMetadata()))),
+			Attributes: []attribute.KeyValue{
+				MessagingRsmqMessageTopic.String(mq.opts.Topic),
+				MessagingRsmqMessageTag.String(m.GetTag()),
+				semconv.MessagingMessageBodySize(len(m.GetPayload())),
+				semconv.MessagingMessageID(m.GetId()),
+			},
 		})
 	}
 
@@ -518,9 +551,10 @@ func (mq *MessageQueue) processMessages(ctx context.Context, handler BatchMessag
 		ctx, span = mq.opts.TracerProvider.Tracer("rsmq").Start(ctx, "ConsumeStream",
 			trace.WithLinks(links...),
 			trace.WithAttributes(
-				attribute.String("topic", mq.opts.Topic),
-				attribute.String("consumer_group", mq.opts.ConsumeOpts.ConsumerGroup),
-				attribute.Int("message_count", len(messages)),
+				MessagingRsmqSystem,
+				MessagingRsmqMessageTopic.String(mq.opts.Topic),
+				MessagingRsmqMessageGroup.String(mq.opts.ConsumeOpts.ConsumerGroup),
+				semconv.MessagingBatchMessageCount(len(messages)),
 			))
 		defer span.End()
 	}

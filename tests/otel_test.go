@@ -14,6 +14,7 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -44,15 +45,17 @@ func TestOtel(t *testing.T) {
 	require.Nil(t, err)
 	defer queue.Close()
 
-	task := &rsmq.Message{
-		Payload: json.RawMessage(`{"message": "Hello world"}`),
-	}
-
 	ctx, span := tp.Tracer("rsmq").Start(context.Background(), "otel")
 	defer span.End()
 
-	err = queue.Add(ctx, task)
-	require.Nil(t, err)
+	for i := 0; i < 3; i++ {
+		task := &rsmq.Message{
+			Payload: json.RawMessage(`{"message": "Hello world"}`),
+		}
+
+		err = queue.Add(ctx, task)
+		require.Nil(t, err)
+	}
 
 	go func() {
 		_ = queue.Consume(context.Background(), func(ctx context.Context, task *rsmq.Message) error {
@@ -67,7 +70,15 @@ func TestOtel(t *testing.T) {
 
 	fmt.Printf("%+v %d\n", exporter.GetSpans().Snapshots(), len(exporter.GetSpans().Snapshots()))
 	spans := exporter.GetSpans().Snapshots()
-	if len(spans) == 2 && spans[0].Name() == "Add" && spans[1].Name() == "ConsumeStream" {
+	if len(spans) == 4 && spans[0].Name() == "Add" && spans[1].Name() == "Add" && spans[2].Name() == "Add" && spans[3].Name() == "ConsumeStream" {
+		traceId := spans[0].SpanContext().TraceID().String()
+		linkTraceId := trace.LinkFromContext(ctx).SpanContext.TraceID().String()
+		require.Equal(t, traceId, linkTraceId)
+		require.Equal(t, spans[3].Attributes()[0], rsmq.MessagingRsmqSystem)
+		require.Equal(t, spans[3].Attributes()[1], rsmq.MessagingRsmqMessageTopic.String("otel"))
+		require.Equal(t, spans[3].Attributes()[2], rsmq.MessagingRsmqMessageGroup.String("task_group"))
+		require.Equal(t, spans[3].Attributes()[3], semconv.MessagingBatchMessageCount(3))
+
 		return
 	}
 
