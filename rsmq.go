@@ -30,6 +30,22 @@ import (
 	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 )
 
+//go:embed delay.lua
+var delayScript string
+
+var (
+	// MessagingRsmqSystem is the messaging system for rsmq
+	MessagingRsmqSystem = attribute.Key("messaging.system").String("rsmq")
+	// MessagingRsmqMessageTopic is the messaging topic for rsmq
+	MessagingRsmqMessageTopic = attribute.Key("messaging.rsmq.message.topic")
+	// MessagingRsmqMessageGroup is the messaging group for rsmq
+	MessagingRsmqMessageGroup = attribute.Key("messaging.rsmq.message.group")
+	// MessagingRsmqMessageID is the messaging ID for rsmq
+	MessagingRsmqMessageTag = attribute.Key("messaging.rsmq.message.tag")
+	// MessagingRsmqMessageID is the messaging ID for rsmq
+	MessagingRsmqMessageDeliveryTimestamp = attribute.Key("messaging.rsmq.message.delivery_timestamp")
+)
+
 // Message represents a message in the queue
 type Message = rsmqv1.Message
 
@@ -121,22 +137,6 @@ type ConsumeOpts struct {
 	// e.g. "tag1||tag2||tag3"
 	SubExpression string
 }
-
-//go:embed delay.lua
-var delayScript string
-
-var (
-	// MessagingRsmqSystem is the messaging system for rsmq
-	MessagingRsmqSystem = attribute.Key("messaging.system").String("rsmq")
-	// MessagingRsmqMessageTopic is the messaging topic for rsmq
-	MessagingRsmqMessageTopic = attribute.Key("messaging.rsmq.message.topic")
-	// MessagingRsmqMessageGroup is the messaging group for rsmq
-	MessagingRsmqMessageGroup = attribute.Key("messaging.rsmq.message.group")
-	// MessagingRsmqMessageID is the messaging ID for rsmq
-	MessagingRsmqMessageTag = attribute.Key("messaging.rsmq.message.tag")
-	// MessagingRsmqMessageID is the messaging ID for rsmq
-	MessagingRsmqMessageDeliveryTimestamp = attribute.Key("messaging.rsmq.message.delivery_timestamp")
-)
 
 // New creates a new MessageQueue instance
 func New(opts Options) (*MessageQueue, error) {
