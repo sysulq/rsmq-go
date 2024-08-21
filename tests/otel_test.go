@@ -71,7 +71,7 @@ func TestOtel(t *testing.T) {
 
 	fmt.Printf("%+v %d\n", exporter.GetSpans().Snapshots(), len(exporter.GetSpans().Snapshots()))
 	spans := exporter.GetSpans().Snapshots()
-	if len(spans) == 4 && spans[0].Name() == "Add" && spans[1].Name() == "Add" && spans[2].Name() == "Add" && spans[3].Name() == "ConsumeStream" {
+	if len(spans) == 4 && spans[0].Name() == "Add" && spans[1].Name() == "Add" && spans[2].Name() == "Add" && spans[3].Name() == "BatchConsume" {
 		traceId := spans[0].SpanContext().TraceID().String()
 		linkTraceId := trace.LinkFromContext(ctx).SpanContext.TraceID().String()
 		require.Equal(t, traceId, linkTraceId)

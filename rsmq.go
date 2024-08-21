@@ -548,7 +548,7 @@ func (mq *MessageQueue) processMessages(ctx context.Context, handler BatchMessag
 
 	if mq.opts.TracerProvider != nil {
 		var span trace.Span
-		ctx, span = mq.opts.TracerProvider.Tracer("rsmq").Start(ctx, "ConsumeStream",
+		ctx, span = mq.opts.TracerProvider.Tracer("rsmq").Start(ctx, "BatchConsume",
 			trace.WithLinks(links...),
 			trace.WithAttributes(
 				MessagingRsmqSystem,
