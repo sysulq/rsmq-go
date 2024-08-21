@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"testing"
 	"time"
 
@@ -77,7 +78,11 @@ func TestOtel(t *testing.T) {
 		require.Equal(t, spans[3].Attributes()[0], rsmq.MessagingRsmqSystem)
 		require.Equal(t, spans[3].Attributes()[1], rsmq.MessagingRsmqMessageTopic.String("otel"))
 		require.Equal(t, spans[3].Attributes()[2], rsmq.MessagingRsmqMessageGroup.String("task_group"))
-		require.Equal(t, spans[3].Attributes()[3], semconv.MessagingBatchMessageCount(3))
+
+		hostname, err := os.Hostname()
+		require.Nil(t, err)
+		require.Contains(t, spans[3].Attributes()[3].Value.AsString(), hostname)
+		require.Equal(t, spans[3].Attributes()[4], semconv.MessagingBatchMessageCount(3))
 
 		return
 	}

@@ -554,6 +554,7 @@ func (mq *MessageQueue) processMessages(ctx context.Context, handler BatchMessag
 				MessagingRsmqSystem,
 				MessagingRsmqMessageTopic.String(mq.opts.Topic),
 				MessagingRsmqMessageGroup.String(mq.opts.ConsumeOpts.ConsumerGroup),
+				semconv.MessagingClientID(mq.opts.ConsumeOpts.ConsumerID),
 				semconv.MessagingBatchMessageCount(len(messages)),
 			))
 		defer span.End()
