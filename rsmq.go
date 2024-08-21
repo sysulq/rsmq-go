@@ -42,7 +42,7 @@ var (
 	MessagingRsmqMessageGroup = attribute.Key("messaging.rsmq.message.group")
 	// MessagingRsmqMessageID is the messaging ID for rsmq
 	MessagingRsmqMessageTag = attribute.Key("messaging.rsmq.message.tag")
-	// MessagingRsmqMessageID is the messaging ID for rsmq
+	// MessagingRsmqMessageDeliveryTimestamp is the messaging delivery timestamp for rsmq
 	MessagingRsmqMessageDeliveryTimestamp = attribute.Key("messaging.rsmq.message.delivery_timestamp")
 )
 
