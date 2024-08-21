@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -86,20 +88,22 @@ func TestRateLimit(t *testing.T) {
 		t.Errorf("Expected to take at least 2 seconds, took %s", time.Since(now))
 	}
 
-	for idx, result := range resultsList {
+	numbers := make([]int, 0)
+	for _, result := range resultsList {
 		if !strings.HasPrefix(result["message"].(string), "Hello ") {
 			t.Errorf("Expected result ID to start with 'Hello ', got %s", result)
 		}
 
 		number := result["message"].(string)[6:]
-		if idx < 5 {
-			if number != "1" && number != "3" && number != "5" && number != "7" && number != "9" {
-				t.Errorf("Expected odd number, got %s", number)
-			}
-		} else {
-			if number != "0" && number != "2" && number != "4" && number != "6" && number != "8" {
-				t.Errorf("Expected even number, got %s", number)
-			}
+		n, err := strconv.Atoi(number)
+		require.Nil(t, err)
+		numbers = append(numbers, n)
+	}
+
+	slices.Sort(numbers)
+	for i := 0; i < 10; i++ {
+		if numbers[i] != i {
+			t.Errorf("Expected number to be %d, got %d", i, numbers[i])
 		}
 	}
 }

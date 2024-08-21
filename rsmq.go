@@ -187,18 +187,14 @@ func New(opts Options) (*MessageQueue, error) {
 		}
 
 		mq.cron.Schedule(cron.Every(opts.ConsumeOpts.IdleConsumerCleanInterval), cron.FuncJob(func() {
-			err := mq.withRedisLock(context.Background(), mq.streamLockKeyString(), func(ctx context.Context) error {
-				return mq.cleanIdleConsumers(context.Background())
-			})
+			err := mq.withRedisLock(context.Background(), mq.streamLockKeyString(), mq.cleanIdleConsumers)
 			if err != nil {
 				slog.Error("failed to clean idle consumers", "error", err)
 			}
 		}))
 
 		mq.cron.Schedule(cron.Every(opts.RetentionOpts.CheckRetentionInterval), cron.FuncJob(func() {
-			err := mq.withRedisLock(context.Background(), mq.streamLockKeyString(), func(ctx context.Context) error {
-				return mq.cleanIdleMessages(context.Background())
-			})
+			err := mq.withRedisLock(context.Background(), mq.streamLockKeyString(), mq.cleanIdleMessages)
 			if err != nil {
 				slog.Error("failed to clean idle messages", "error", err)
 			}
@@ -210,6 +206,7 @@ func New(opts Options) (*MessageQueue, error) {
 	return mq, nil
 }
 
+// enqueueMessage enqueues a message to the stream or delayed set
 func (mq *MessageQueue) enqueueMessage(ctx context.Context, pipe redis.Cmdable, msg *Message) error {
 	messageBytes, err := proto.Marshal(msg)
 	if err != nil {
@@ -262,7 +259,7 @@ func (mq *MessageQueue) Add(ctx context.Context, message *Message) error {
 	message.Topic = mq.opts.Topic
 
 	if span := trace.SpanFromContext(ctx); span.SpanContext().IsValid() {
-		ctx, span = mq.opts.TracerProvider.Tracer("rsmq").Start(ctx, "Enqueue", trace.WithAttributes(
+		ctx, span = mq.opts.TracerProvider.Tracer("rsmq").Start(ctx, "Add", trace.WithAttributes(
 			attribute.String("message.id", message.Id),
 			attribute.String("topic", mq.opts.Topic),
 		))
@@ -358,6 +355,7 @@ func (mq *MessageQueue) BatchConsume(ctx context.Context, handler BatchMessageHa
 	}
 }
 
+// Close closes the message queue
 func (mq *MessageQueue) Close() error {
 	if !mq.closed.CompareAndSwap(0, 1) {
 		return nil
@@ -374,6 +372,7 @@ func (mq *MessageQueue) Close() error {
 	return nil
 }
 
+// processDelayedMessages processes delayed messages
 func (mq *MessageQueue) processDelayedMessages(ctx context.Context) (int, error) {
 	now := time.Now().Unix()
 
@@ -385,6 +384,7 @@ func (mq *MessageQueue) processDelayedMessages(ctx context.Context) (int, error)
 	return result, nil
 }
 
+// consumeStream consumes messages from the stream
 func (mq *MessageQueue) consumeStream(ctx context.Context, handler BatchMessageHandler) (uint32, error) {
 	var processed uint32
 
@@ -413,7 +413,8 @@ func (mq *MessageQueue) consumeStream(ctx context.Context, handler BatchMessageH
 	return processed, nil
 }
 
-func (mq *MessageQueue) processMessages(ctx context.Context, handler BatchMessageHandler, isPending bool) (uint32, error) {
+// retrieveMessages retrieves messages from the stream
+func (mq *MessageQueue) retrieveMessages(ctx context.Context, isPending bool) ([]redis.XMessage, error) {
 	batchSize := mq.opts.ConsumeOpts.BatchSize
 	if mq.rateLimit != nil {
 		batchSize = mq.doRateLimit(ctx, batchSize)
@@ -431,7 +432,7 @@ func (mq *MessageQueue) processMessages(ctx context.Context, handler BatchMessag
 			Count:    batchSize,
 		}).Result()
 		if err != nil {
-			return 0, fmt.Errorf("failed to claim pending messages: %w", err)
+			return nil, fmt.Errorf("failed to claim pending messages: %w", err)
 		}
 
 		newMessages = claimed
@@ -439,7 +440,7 @@ func (mq *MessageQueue) processMessages(ctx context.Context, handler BatchMessag
 		// Wait for the next poll, but don't exceed the time until the next delayed message
 		nextBlockTime, err := mq.getNextBlockTime(ctx)
 		if err != nil {
-			return 0, err
+			return nil, err
 		}
 
 		if nextBlockTime == 0 || nextBlockTime > mq.opts.ConsumeOpts.MaxBlockDuration {
@@ -455,20 +456,31 @@ func (mq *MessageQueue) processMessages(ctx context.Context, handler BatchMessag
 		}).Result()
 		if err != nil {
 			if err == redis.Nil {
-				return 0, nil // No messages
+				return nil, nil // No messages
 			}
 			if strings.HasPrefix(err.Error(), "NOGROUP") {
 				if err := mq.ensureConsumerGroup(ctx, mq.opts.ConsumeOpts.ConsumerGroup); err != nil {
-					return 0, err
+					return nil, err
 				}
-				return mq.processMessages(ctx, handler, isPending)
+				return mq.retrieveMessages(ctx, isPending)
 			}
-			return 0, fmt.Errorf("failed to read from stream: %w", err)
+			return nil, fmt.Errorf("failed to read from stream: %w", err)
 		}
 
+		newMessages = make([]redis.XMessage, 0, batchSize)
 		for _, stream := range streams {
 			newMessages = append(newMessages, stream.Messages...)
 		}
+	}
+
+	return newMessages, nil
+}
+
+// processMessages retrieves messages from the stream and processes them
+func (mq *MessageQueue) processMessages(ctx context.Context, handler BatchMessageHandler, isPending bool) (uint32, error) {
+	newMessages, err := mq.retrieveMessages(ctx, isPending)
+	if err != nil {
+		return 0, err
 	}
 
 	messages := make([]*Message, 0, len(newMessages))
@@ -558,8 +570,9 @@ func (mq *MessageQueue) ackMessages(ctx context.Context, ids ...string) {
 	}
 }
 
+// getRateLimit returns the rate limit for the consumer group
 func (mq *MessageQueue) getNextBlockTime(ctx context.Context) (time.Duration, error) {
-	// 取最近的一个延迟消息的时间
+	// Get the next delayed message time
 	result, err := mq.opts.Client.ZRangeWithScores(ctx, mq.streamDelayKeyString(), 0, 0).Result()
 	if err != nil {
 		return 0, fmt.Errorf("failed to get next delayed message time: %w", err)
@@ -572,6 +585,7 @@ func (mq *MessageQueue) getNextBlockTime(ctx context.Context) (time.Duration, er
 	return time.Until(time.Unix(int64(result[0].Score), 0)), nil
 }
 
+// generateConsumerID generates a unique consumer ID
 func generateConsumerID() string {
 	hostname, err := os.Hostname()
 	if err != nil {
@@ -580,6 +594,7 @@ func generateConsumerID() string {
 	return fmt.Sprintf("%s-%d", hostname, os.Getpid())
 }
 
+// cleanIdleConsumers removes idle consumers from the consumer group
 func (mq *MessageQueue) cleanIdleConsumers(ctx context.Context) error {
 	consumers, err := mq.opts.Client.XInfoConsumers(ctx, mq.streamString(), mq.opts.ConsumeOpts.ConsumerGroup).Result()
 	if err != nil {
@@ -593,12 +608,17 @@ func (mq *MessageQueue) cleanIdleConsumers(ctx context.Context) error {
 		}
 
 		if consumer.Idle > mq.opts.ConsumeOpts.ConsumerIdleTimeout {
-			_ = mq.opts.Client.XGroupDelConsumer(ctx, mq.streamString(), mq.opts.ConsumeOpts.ConsumerGroup, consumer.Name).Err()
+			err := mq.opts.Client.XGroupDelConsumer(ctx, mq.streamString(), mq.opts.ConsumeOpts.ConsumerGroup, consumer.Name).Err()
+			if err != nil {
+				return fmt.Errorf("failed to delete consumer: %w", err)
+			}
 		}
 	}
+
 	return nil
 }
 
+// cleanIdleMessages removes idle messages from the stream
 func (mq *MessageQueue) cleanIdleMessages(ctx context.Context) error {
 	minId := fmt.Sprintf("%d", time.Now().Add(-mq.opts.RetentionOpts.MaxRetentionTime).UnixMilli())
 
@@ -615,6 +635,7 @@ func (mq *MessageQueue) cleanIdleMessages(ctx context.Context) error {
 	return nil
 }
 
+// withRedisLock executes a function with a Redis lock
 func (mq *MessageQueue) withRedisLock(ctx context.Context, key string, f func(context.Context) error) error {
 	lock, err := mq.redisLock.Obtain(ctx, key, 3*time.Second, &redislock.Options{})
 	if err != nil {
@@ -625,6 +646,7 @@ func (mq *MessageQueue) withRedisLock(ctx context.Context, key string, f func(co
 	return f(ctx)
 }
 
+// retry re-queues a message with an exponential backoff
 func (q *MessageQueue) retry(ctx context.Context, msg *Message) error {
 	// Make the delete and re-queue operation atomic in case we crash midway
 	// and lose a message.
@@ -656,6 +678,7 @@ func (q *MessageQueue) retry(ctx context.Context, msg *Message) error {
 	return err
 }
 
+// send2dlq sends a message to the dead-letter queue
 func (mq *MessageQueue) send2dlq(ctx context.Context, msg *Message) error {
 	// Make the delete and re-queue operation atomic in case we crash midway
 	// and lose a message.
@@ -699,6 +722,7 @@ func (mq *MessageQueue) send2dlq(ctx context.Context, msg *Message) error {
 	return err
 }
 
+// unmarshalMessage unmarshal a message from Redis
 func (mq *MessageQueue) unmarshalMessage(msg redis.XMessage) (*Message, error) {
 	messageJSON := msg.Values["message"].(string)
 	var m Message
@@ -709,6 +733,7 @@ func (mq *MessageQueue) unmarshalMessage(msg redis.XMessage) (*Message, error) {
 	return &m, nil
 }
 
+// doRateLimit limits the rate of consuming messages
 func (mq *MessageQueue) doRateLimit(ctx context.Context, n int64) int64 {
 	for {
 		result, err := mq.rateLimit.AllowAtMost(ctx,

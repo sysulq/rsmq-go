@@ -67,7 +67,7 @@ func TestOtel(t *testing.T) {
 
 	fmt.Printf("%+v %d\n", exporter.GetSpans().Snapshots(), len(exporter.GetSpans().Snapshots()))
 	spans := exporter.GetSpans().Snapshots()
-	if len(spans) == 2 && spans[0].Name() == "Enqueue" && spans[1].Name() == "ConsumeStream" {
+	if len(spans) == 2 && spans[0].Name() == "Add" && spans[1].Name() == "ConsumeStream" {
 		return
 	}
 
