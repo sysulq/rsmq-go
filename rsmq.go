@@ -59,6 +59,7 @@ type BatchMessageHandler func(context.Context, []*Message) []error
 type MessageQueue struct {
 	opts        Options
 	closed      *atomic.Uint32
+	stopped     chan struct{}
 	delayScript *redis.Script
 	cron        *cron.Cron
 	redisLock   *redislock.Client
@@ -136,6 +137,9 @@ type ConsumeOpts struct {
 	// SubExpression is the sub expression to filter messages, default is "*"
 	// e.g. "tag1||tag2||tag3"
 	SubExpression string
+	// CloseTimeout is the timeout to wait for the consumer to close
+	// Default is 5 seconds
+	CloseTimeout time.Duration
 }
 
 // New creates a new MessageQueue instance
@@ -165,6 +169,7 @@ func New(opts Options) (*MessageQueue, error) {
 			PendingTimeout:            time.Minute,
 			IdleConsumerCleanInterval: 5 * time.Minute,
 			SubExpression:             "*",
+			CloseTimeout:              5 * time.Second,
 		},
 	}
 
@@ -176,6 +181,7 @@ func New(opts Options) (*MessageQueue, error) {
 		opts:        opts,
 		delayScript: redis.NewScript(delayScript),
 		closed:      &atomic.Uint32{},
+		stopped:     make(chan struct{}),
 		cron:        cron.New(),
 		redisLock:   redislock.New(opts.Client),
 	}
@@ -236,7 +242,6 @@ func (mq *MessageQueue) enqueueMessage(ctx context.Context, pipe redis.Cmdable, 
 			msg.Metadata = make(map[string]string)
 		}
 		otel.GetTextMapPropagator().Inject(ctx, propagation.MapCarrier(msg.Metadata))
-		fmt.Println(msg)
 	}
 
 	messageBytes, err := proto.Marshal(msg)
@@ -367,9 +372,11 @@ func (mq *MessageQueue) BatchConsume(ctx context.Context, handler BatchMessageHa
 	for {
 		select {
 		case <-ctx.Done():
+			close(mq.stopped)
 			return ctx.Err()
 		default:
 			if mq.closed.Load() == 1 {
+				close(mq.stopped)
 				return nil
 			}
 
@@ -390,6 +397,15 @@ func (mq *MessageQueue) Close() error {
 	}
 
 	mq.cron.Stop()
+
+	if mq.opts.ConsumeOpts.ConsumerGroup == "" {
+		return nil
+	}
+
+	select {
+	case <-time.After(mq.opts.ConsumeOpts.CloseTimeout):
+	case <-mq.stopped:
+	}
 
 	err := mq.opts.Client.XGroupDelConsumer(
 		context.Background(), mq.streamString(), mq.opts.ConsumeOpts.ConsumerGroup, mq.opts.ConsumeOpts.ConsumerID).Err()
