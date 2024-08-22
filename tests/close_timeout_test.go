@@ -38,6 +38,8 @@ func TestCloseTimeout(t *testing.T) {
 		})
 	}()
 
+	time.Sleep(10 * time.Millisecond)
+
 	now := time.Now()
 	err = queue.Close()
 	require.Nil(t, err)
