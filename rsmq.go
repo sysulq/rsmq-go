@@ -222,11 +222,6 @@ func New(opts Options) (*MessageQueue, error) {
 
 // enqueueMessage enqueues a message to the stream or delayed set
 func (mq *MessageQueue) enqueueMessage(ctx context.Context, pipe redis.Cmdable, msg *Message) error {
-	messageBytes, err := proto.Marshal(msg)
-	if err != nil {
-		return fmt.Errorf("failed to marshal message: %w", err)
-	}
-
 	var span trace.Span
 	if span = trace.SpanFromContext(ctx); span.SpanContext().IsValid() {
 		ctx, span = mq.opts.TracerProvider.Tracer("rsmq").Start(ctx, "Add", trace.WithAttributes(
@@ -241,6 +236,12 @@ func (mq *MessageQueue) enqueueMessage(ctx context.Context, pipe redis.Cmdable, 
 			msg.Metadata = make(map[string]string)
 		}
 		otel.GetTextMapPropagator().Inject(ctx, propagation.MapCarrier(msg.Metadata))
+		fmt.Println(msg)
+	}
+
+	messageBytes, err := proto.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal message: %w", err)
 	}
 
 	if msg.GetDeliverTimestamp().GetSeconds() > msg.GetBornTimestamp().GetSeconds() {
