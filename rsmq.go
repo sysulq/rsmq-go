@@ -161,7 +161,7 @@ func New(opts Options) (*MessageQueue, error) {
 		},
 		ConsumeOpts: ConsumeOpts{
 			BatchSize:                 100,
-			MaxBlockDuration:          100 * time.Millisecond,
+			MaxBlockDuration:          time.Second,
 			MaxConcurrency:            100,
 			ConsumerID:                generateConsumerID(),
 			ConsumerIdleTimeout:       2 * time.Hour,

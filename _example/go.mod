@@ -8,6 +8,7 @@ require (
 	github.com/redis/go-redis/v9 v9.6.1
 	github.com/sysulq/rsmq-go v0.0.0-20240821093712-94703c46eb40
 	go.opentelemetry.io/contrib/exporters/autoexport v0.53.0
+	go.opentelemetry.io/otel v1.28.0
 	go.opentelemetry.io/otel/sdk v1.28.0
 	google.golang.org/protobuf v1.34.2
 )
@@ -31,7 +32,6 @@ require (
 	github.com/prometheus/procfs v0.15.1 // indirect
 	github.com/robfig/cron/v3 v3.0.1 // indirect
 	go.opentelemetry.io/contrib/bridges/prometheus v0.53.0 // indirect
-	go.opentelemetry.io/otel v1.28.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp v0.4.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc v1.28.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp v1.28.0 // indirect
