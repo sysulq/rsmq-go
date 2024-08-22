@@ -6,6 +6,14 @@ rsmq-go
 
 Go implementation of the Message Queue based on Redis Streams.
 
+![rsmq](./assets/rsmq.excalidraw.png)
+
+Why
+---
+
+- High performance and low latency
+- Easy to use and maintain with Redis
+
 Features
 ---
 
