@@ -58,7 +58,8 @@ type BatchMessageHandler func(context.Context, []*Message) []error
 // MessageQueue manages message production and consumption
 type MessageQueue struct {
 	opts        Options
-	closed      *atomic.Uint32
+	closed      uint32
+	consuming   uint32
 	stopped     chan struct{}
 	delayScript *redis.Script
 	cron        *cron.Cron
@@ -180,7 +181,6 @@ func New(opts Options) (*MessageQueue, error) {
 	mq := &MessageQueue{
 		opts:        opts,
 		delayScript: redis.NewScript(delayScript),
-		closed:      &atomic.Uint32{},
 		stopped:     make(chan struct{}),
 		cron:        cron.New(),
 		redisLock:   redislock.New(opts.Client),
@@ -369,13 +369,17 @@ func (mq *MessageQueue) BatchConsume(ctx context.Context, handler BatchMessageHa
 		return fmt.Errorf("consumer group is required")
 	}
 
+	if !atomic.CompareAndSwapUint32(&mq.consuming, 0, 1) {
+		return fmt.Errorf("consumer is already consuming")
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
 			close(mq.stopped)
 			return ctx.Err()
 		default:
-			if mq.closed.Load() == 1 {
+			if atomic.LoadUint32(&mq.closed) == 1 {
 				close(mq.stopped)
 				return nil
 			}
@@ -392,13 +396,13 @@ func (mq *MessageQueue) BatchConsume(ctx context.Context, handler BatchMessageHa
 
 // Close closes the message queue
 func (mq *MessageQueue) Close() error {
-	if !mq.closed.CompareAndSwap(0, 1) {
+	if !atomic.CompareAndSwapUint32(&mq.closed, 0, 1) {
 		return nil
 	}
 
 	mq.cron.Stop()
 
-	if mq.opts.ConsumeOpts.ConsumerGroup == "" {
+	if atomic.LoadUint32(&mq.consuming) == 0 {
 		return nil
 	}
 
@@ -531,7 +535,7 @@ func (mq *MessageQueue) processMessages(ctx context.Context, handler BatchMessag
 	messageIDs, invalidMessageIds := make([]string, 0, len(newMessages)), make([]string, 0, len(newMessages))
 	links := make([]trace.Link, 0, len(newMessages))
 
-	for _, message := range newMessages {
+	for idx, message := range newMessages {
 		m, err := mq.unmarshalMessage(message)
 		if err != nil {
 			slog.ErrorContext(ctx, "failed to unmarshal message", "error", err)
@@ -546,15 +550,23 @@ func (mq *MessageQueue) processMessages(ctx context.Context, handler BatchMessag
 		}
 		messages = append(messages, m)
 		messageIDs = append(messageIDs, message.ID)
-		links = append(links, trace.Link{
-			SpanContext: trace.SpanContextFromContext(otel.GetTextMapPropagator().Extract(ctx, propagation.MapCarrier(m.GetMetadata()))),
-			Attributes: []attribute.KeyValue{
-				MessagingRsmqMessageTopic.String(mq.opts.Topic),
-				MessagingRsmqMessageTag.String(m.GetTag()),
-				semconv.MessagingMessageBodySize(len(m.GetPayload())),
-				semconv.MessagingMessageID(m.GetId()),
-			},
-		})
+
+		if mq.opts.TracerProvider != nil {
+			newCtx := otel.GetTextMapPropagator().Extract(ctx, propagation.MapCarrier(m.GetMetadata()))
+			if idx == 0 {
+				ctx = newCtx
+			}
+
+			links = append(links, trace.Link{
+				SpanContext: trace.SpanContextFromContext(newCtx),
+				Attributes: []attribute.KeyValue{
+					MessagingRsmqMessageTopic.String(mq.opts.Topic),
+					MessagingRsmqMessageTag.String(m.GetTag()),
+					semconv.MessagingMessageBodySize(len(m.GetPayload())),
+					semconv.MessagingMessageID(m.GetId()),
+				},
+			})
+		}
 	}
 
 	mq.ackMessages(ctx, invalidMessageIds...)

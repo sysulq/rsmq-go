@@ -44,11 +44,7 @@ func main() {
 	queue, err := rsmq.New(rsmq.Options{
 		Client:         cc,
 		TracerProvider: tp,
-		Topic:          "stream_produce_and_consume",
-		ConsumeOpts: rsmq.ConsumeOpts{
-			ConsumerGroup:   "task_group",
-			AutoCreateGroup: true,
-		},
+		Topic:          "rsmq_example",
 	})
 	if err != nil {
 		log.Fatalf("Failed to create queue: %v", err)

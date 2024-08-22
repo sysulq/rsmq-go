@@ -39,7 +39,7 @@ func main() {
 	queue, err := rsmq.New(rsmq.Options{
 		Client:         cc,
 		TracerProvider: tp,
-		Topic:          "stream_produce_and_consume",
+		Topic:          "rsmq_example",
 		ConsumeOpts: rsmq.ConsumeOpts{
 			ConsumerGroup:   "task_group",
 			AutoCreateGroup: true,
