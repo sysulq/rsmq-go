@@ -13,8 +13,8 @@ require (
 	go.opentelemetry.io/otel v1.34.0
 	go.opentelemetry.io/otel/sdk v1.34.0
 	go.opentelemetry.io/otel/trace v1.34.0
-	golang.org/x/sync v0.10.0
-	google.golang.org/protobuf v1.36.4
+	golang.org/x/sync v0.11.0
+	google.golang.org/protobuf v1.36.5
 )
 
 require (
