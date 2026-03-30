@@ -22,10 +22,10 @@ jobs:
           - 6379:6379
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
 
     - name: Set up Go
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@v6
       with:
         go-version: ${{ matrix.version }}
         cache: true
@@ -34,6 +34,6 @@ jobs:
       run: go test -race -v ./... -coverpkg=github.com/sysulq/rsmq-go -coverprofile=coverage.out
 
     - name: Upload coverage reports to Codecov
-      uses: codecov/codecov-action@v5
+      uses: codecov/codecov-action@v6
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
